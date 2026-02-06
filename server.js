@@ -7,148 +7,279 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
-
 app.use(express.static("public"));
 
 /**
  * ============================================================
- *  DECK (10 tờ dò) — 5 cặp màu, mỗi cặp 2 tờ (A/B)
- *  Title đổi theo yêu cầu:
- *    - "TÂN TÂN"   -> "RỰC RỠ"
- *    - "MIỀN TÂY"  -> "THÀNH CÔNG"
- *    - "HÊN XUI"   -> "HUY HOÀNG"
+ *  FIXED DECK (10 tờ dò mẫu) — mỗi hàng đúng 5 số
+ *  Mỗi tờ = 9 hàng, mỗi hàng 5 số.
+ *  Server sẽ tự map sang grid 9x9 theo cột thập phân:
+ *    cột 1: 1-9, cột 2: 10-19, ..., cột 9: 80-90
  * ============================================================
  */
 
-// Helper: lấy cột theo hệ số (1-9, 10-19, ..., 80-90)
 function decadeCol(n) {
   if (n === 90) return 8;
   return Math.floor(n / 10);
 }
 
-// Generate 15 numbers theo rule: tổng 15 số/ block 3x9, mỗi row max 5 số
-// (để cho ra đúng kiểu lô tô truyền thống có ô trống)
-function generateBlock15(seedNumbers) {
-  // seedNumbers: nếu có thì dùng lại; nếu không tự sinh
-  if (seedNumbers && Array.isArray(seedNumbers) && seedNumbers.length === 15) {
-    return seedNumbers.slice().sort((a, b) => a - b);
+function rowsToGrid(rows9) {
+  // grid 9x9, null là ô trống
+  const grid = Array.from({ length: 9 }, () => Array(9).fill(null));
+  for (let r = 0; r < 9; r++) {
+    const nums = rows9[r] || [];
+    for (const n of nums) {
+      const c = decadeCol(n);
+      // nếu trùng cột (hiếm), đẩy sang cột trống gần nhất (fallback)
+      if (grid[r][c] === null) grid[r][c] = n;
+      else {
+        let placed = false;
+        for (let k = 1; k < 9; k++) {
+          const left = c - k;
+          const right = c + k;
+          if (left >= 0 && grid[r][left] === null) {
+            grid[r][left] = n;
+            placed = true;
+            break;
+          }
+          if (right < 9 && grid[r][right] === null) {
+            grid[r][right] = n;
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          // bỏ qua nếu không còn chỗ (gần như không xảy ra)
+        }
+      }
+    }
   }
-
-  // Mỗi block chọn 15 số ngẫu nhiên từ 1..90 (không trùng trong block)
-  const set = new Set();
-  while (set.size < 15) {
-    set.add(1 + Math.floor(Math.random() * 90));
-  }
-  return Array.from(set).sort((a, b) => a - b);
+  return grid;
 }
 
-// Build a full card: 3 blocks * 15 numbers = 45 numbers total (non-duplicate)
-function generateCardNumbers45() {
-  const used = new Set();
+function rowsToBlocks(rows9) {
+  // 3 block * 15 số để client hiển thị tách 3 bảng con
   const blocks = [];
-
   for (let b = 0; b < 3; b++) {
-    const blockSet = new Set();
-    while (blockSet.size < 15) {
-      const n = 1 + Math.floor(Math.random() * 90);
-      if (used.has(n)) continue;
-      used.add(n);
-      blockSet.add(n);
+    const flat = [];
+    for (let r = b * 3; r < b * 3 + 3; r++) {
+      flat.push(...rows9[r]);
     }
-    blocks.push(Array.from(blockSet).sort((a, b) => a - b));
+    blocks.push(flat);
   }
   return blocks;
 }
 
-// Make complementary card for pair B: dùng các số "đối" theo cột để tạo cảm giác tương phản
-// (Không bắt buộc 100% đối từng số, nhưng đảm bảo khác biệt rõ)
-function makeComplementBlocks(blocksA) {
-  const used = new Set();
-  const blocksB = [];
+/**
+ * 10 tờ dò mẫu (đúng theo ảnh bạn gửi)
+ * Map màu theo 5 cặp: blue, red, green, purple, orange
+ * A/B là 1 cặp.
+ *
+ * Bạn có thể đổi title nếu muốn (mình giữ theo yêu cầu rename trước đó):
+ *  - Blue: THÀNH CÔNG
+ *  - Red:  RỰC RỠ
+ *  - Green: THÀNH CÔNG
+ *  - Purple: HUY HOÀNG
+ *  - Orange: HUY HOÀNG
+ */
+const FIXED_TICKETS = [
+  // ===== BLUE PAIR (2 tờ vàng) =====
+  {
+    id: "blue-A",
+    color: "blue",
+    colorLabel: "Xanh dương",
+    variant: "A",
+    title: "THÀNH CÔNG",
+    rows: [
+      [7, 16, 32, 66, 73],
+      [18, 29, 46, 55, 88],
+      [2, 23, 34, 50, 75],
+      [4, 30, 40, 61, 78],
+      [10, 27, 41, 56, 86],
+      [20, 39, 59, 60, 83],
+      [9, 24, 51, 64, 81],
+      [3, 28, 48, 53, 80],
+      [17, 37, 45, 63, 77],
+    ],
+  },
+  {
+    id: "blue-B",
+    color: "blue",
+    colorLabel: "Xanh dương",
+    variant: "B",
+    title: "THÀNH CÔNG",
+    rows: [
+      [19, 35, 49, 71, 85],
+      [8, 14, 47, 54, 74],
+      [6, 25, 36, 62, 84],
+      [15, 22, 58, 70, 89],
+      [12, 31, 43, 68, 90],
+      [1, 42, 65, 72, 87],
+      [5, 21, 38, 52, 76],
+      [13, 33, 57, 67, 82],
+      [11, 26, 44, 69, 79],
+    ],
+  },
 
-  // map n -> "đối" trong cùng decade, kiểu 1<->9, 2<->8...; 10<->19...
-  function mirrorInDecade(n) {
-    if (n === 90) return 80; // 90 đối 80 (tuỳ ý)
-    const d = decadeCol(n); // 0..8
-    const start = d * 10;
-    const end = d === 8 ? 90 : d * 10 + 9;
-    // nếu decade 0 (1-9): start=0, end=9 (nhưng ta không dùng 0)
-    // điều chỉnh cho decade 0: range 1..9
-    const s = d === 0 ? 1 : start;
-    const e = d === 8 ? 90 : end;
-    return s + (e - n);
-  }
+  // ===== RED PAIR =====
+  {
+    id: "red-A",
+    color: "red",
+    colorLabel: "Đỏ",
+    variant: "A",
+    title: "RỰC RỠ",
+    rows: [
+      [19, 32, 58, 64, 84],
+      [13, 20, 48, 55, 77],
+      [2, 21, 46, 75, 82],
+      [6, 18, 39, 62, 70],
+      [25, 41, 59, 74, 83],
+      [17, 38, 44, 60, 86],
+      [8, 22, 47, 66, 72],
+      [9, 12, 37, 42, 88],
+      [15, 36, 51, 68, 90],
+    ],
+  },
+  {
+    id: "red-B",
+    color: "red",
+    colorLabel: "Đỏ",
+    variant: "B",
+    title: "RỰC RỠ",
+    rows: [
+      [5, 29, 30, 56, 80],
+      [10, 35, 54, 63, 81],
+      [4, 26, 45, 61, 79],
+      [3, 14, 43, 50, 71],
+      [7, 23, 31, 52, 73],
+      [11, 28, 49, 69, 89],
+      [24, 34, 53, 67, 85],
+      [27, 40, 57, 76, 87],
+      [1, 16, 33, 65, 78],
+    ],
+  },
 
-  for (let b = 0; b < 3; b++) {
-    const arr = blocksA[b].slice().sort((a, b) => a - b);
-    const cand = [];
+  // ===== GREEN PAIR =====
+  {
+    id: "green-A",
+    color: "green",
+    colorLabel: "Xanh lá",
+    variant: "A",
+    title: "THÀNH CÔNG",
+    rows: [
+      [16, 28, 45, 68, 87],
+      [4, 29, 35, 55, 73],
+      [9, 30, 54, 62, 88],
+      [1, 21, 33, 52, 76],
+      [8, 40, 50, 79, 81],
+      [11, 20, 46, 63, 83],
+      [27, 49, 59, 72, 80],
+      [2, 19, 32, 48, 67],
+      [14, 22, 57, 78, 90],
+    ],
+  },
+  {
+    id: "green-B",
+    color: "green",
+    colorLabel: "Xanh lá",
+    variant: "B",
+    title: "THÀNH CÔNG",
+    rows: [
+      [6, 18, 47, 69, 86],
+      [13, 31, 44, 61, 70],
+      [7, 24, 34, 56, 71],
+      [5, 23, 41, 65, 74],
+      [10, 37, 53, 60, 89],
+      [17, 38, 42, 75, 84],
+      [15, 25, 51, 77, 85],
+      [12, 36, 43, 64, 82],
+      [3, 26, 39, 58, 66],
+    ],
+  },
 
-    for (const n of arr) {
-      let m = mirrorInDecade(n);
-      // tránh trùng trong toàn card B
-      let guard = 0;
-      while (used.has(m) && guard < 40) {
-        // thử lân cận cùng decade
-        m = m === 90 ? 89 : m + 1;
-        if (m > 90) m = 1;
-        guard++;
-      }
-      cand.push(m);
-      used.add(m);
-    }
+  // ===== PURPLE (PINK) PAIR =====
+  {
+    id: "purple-A",
+    color: "purple",
+    colorLabel: "Tím",
+    variant: "A",
+    title: "HUY HOÀNG",
+    rows: [
+      [18, 22, 55, 76, 87],
+      [12, 38, 40, 66, 82],
+      [1, 27, 42, 73, 85],
+      [10, 34, 56, 63, 80],
+      [6, 35, 43, 64, 71],
+      [13, 21, 54, 74, 90],
+      [7, 24, 32, 53, 67],
+      [2, 36, 47, 65, 72],
+      [11, 23, 45, 51, 81],
+    ],
+  },
+  {
+    id: "purple-B",
+    color: "purple",
+    colorLabel: "Tím",
+    variant: "B",
+    title: "HUY HOÀNG",
+    rows: [
+      [19, 28, 46, 68, 75],
+      [5, 26, 39, 58, 78],
+      [14, 37, 50, 69, 84],
+      [3, 25, 57, 60, 86],
+      [16, 31, 49, 77, 89],
+      [8, 17, 48, 59, 79],
+      [15, 20, 44, 52, 70],
+      [4, 33, 41, 61, 83],
+      [9, 29, 30, 62, 88],
+    ],
+  },
 
-    // nếu vì tránh trùng mà thiếu/dup, fix nhẹ
-    const setBlock = new Set(cand);
-    while (setBlock.size < 15) {
-      const x = 1 + Math.floor(Math.random() * 90);
-      if (used.has(x)) continue;
-      used.add(x);
-      setBlock.add(x);
-    }
-    blocksB.push(Array.from(setBlock).sort((a, b) => a - b));
-  }
-
-  return blocksB;
-}
-
-// 5 cặp màu: red, blue, green, purple, orange
-// Tên cặp:
-const PAIRS = [
-  { key: "red", colorLabel: "Đỏ", title: "RỰC RỠ" },         // formerly TÂN TÂN
-  { key: "blue", colorLabel: "Xanh dương", title: "THÀNH CÔNG" }, // formerly MIỀN TÂY
-  { key: "green", colorLabel: "Xanh lá", title: "THÀNH CÔNG" },   // (bạn muốn 5 cặp 5 màu, title có thể trùng)
-  { key: "purple", colorLabel: "Tím", title: "HUY HOÀNG" },   // formerly HÊN XUI
-  { key: "orange", colorLabel: "Cam", title: "HUY HOÀNG" },   // (title có thể trùng)
+  // ===== ORANGE PAIR =====
+  {
+    id: "orange-A",
+    color: "orange",
+    colorLabel: "Cam",
+    variant: "A",
+    title: "HUY HOÀNG",
+    rows: [
+      [3, 15, 32, 60, 71],
+      [10, 20, 43, 54, 85],
+      [2, 26, 35, 59, 76],
+      [6, 39, 49, 68, 73],
+      [13, 29, 48, 50, 88],
+      [22, 30, 53, 65, 82],
+      [1, 25, 58, 69, 90],
+      [7, 21, 41, 56, 87],
+      [11, 37, 44, 61, 70],
+    ],
+  },
+  {
+    id: "orange-B",
+    color: "orange",
+    colorLabel: "Cam",
+    variant: "B",
+    title: "HUY HOÀNG",
+    rows: [
+      [12, 34, 40, 75, 89],
+      [8, 16, 42, 55, 77],
+      [5, 24, 33, 67, 83],
+      [14, 27, 51, 78, 84],
+      [18, 38, 46, 63, 81],
+      [9, 47, 66, 79, 86],
+      [4, 28, 31, 57, 72],
+      [17, 36, 52, 64, 80],
+      [19, 23, 45, 62, 74],
+    ],
+  },
 ];
 
-function createDeck10() {
-  const out = [];
-  for (const p of PAIRS) {
-    const blocksA = generateCardNumbers45();
-    const blocksB = makeComplementBlocks(blocksA);
-
-    out.push({
-      id: `${p.key}-A`,
-      title: p.title,
-      color: p.key,
-      colorLabel: p.colorLabel,
-      variant: "A",
-      blocks: blocksA,
-    });
-
-    out.push({
-      id: `${p.key}-B`,
-      title: p.title,
-      color: p.key,
-      colorLabel: p.colorLabel,
-      variant: "B",
-      blocks: blocksB,
-    });
-  }
-  return out;
-}
-
-const deck = createDeck10();
+// Build deck with grid + blocks for client compatibility
+const deck = FIXED_TICKETS.map((t) => {
+  const grid = rowsToGrid(t.rows);
+  const blocks = rowsToBlocks(t.rows);
+  return { ...t, grid, blocks };
+});
 
 /**
  * ============================================================
@@ -171,7 +302,7 @@ function publicRoom(room) {
     name: room.name,
     maxPlayers: room.maxPlayers,
     hostId: room.hostId,
-    status: room.status, // waiting|playing|ended
+    status: room.status,
     players: room.players.map((p) => ({
       id: p.id,
       name: p.name,
@@ -229,15 +360,18 @@ function startCalling(room) {
   room.calledNumbers = [];
   room.currentNumber = null;
 
-  // numbers 1..90 shuffled
   room.remainingNumbers = Array.from({ length: 90 }, (_, i) => i + 1);
   for (let i = room.remainingNumbers.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [room.remainingNumbers[i], room.remainingNumbers[j]] = [room.remainingNumbers[j], room.remainingNumbers[i]];
+    [room.remainingNumbers[i], room.remainingNumbers[j]] = [
+      room.remainingNumbers[j],
+      room.remainingNumbers[i],
+    ];
   }
 
   room.timer = setInterval(() => {
     if (room.status !== "playing") return;
+
     if (!room.remainingNumbers.length) {
       room.status = "ended";
       stopCalling(room);
@@ -245,6 +379,7 @@ function startCalling(room) {
       io.to(room.id).emit("round:ended", { room: publicRoom(room), reason: { winnerName: null } });
       return;
     }
+
     const n = room.remainingNumbers.shift();
     room.currentNumber = n;
     room.calledNumbers.push(n);
@@ -257,15 +392,23 @@ function stopCalling(room) {
   room.timer = null;
 }
 
+/**
+ * ✅ RULE KINH:
+ * Thắng nếu tồn tại 1 hàng (5 số) mà tất cả 5 số đã nằm trong calledNumbers.
+ */
 function validateClaim(room, player) {
-  // Player must have a card
   const card = deck.find((c) => c.id === player.cardId);
   if (!card) return false;
 
-  // Win condition: "KINH" -> all numbers on card must be called
-  const allNums = card.blocks.flat();
   const called = new Set(room.calledNumbers);
-  return allNums.every((n) => called.has(n));
+  const rows9 = card.rows;
+
+  for (const rowNums of rows9) {
+    if (!rowNums || rowNums.length !== 5) continue;
+    const ok = rowNums.every((n) => called.has(n));
+    if (ok) return true;
+  }
+  return false;
 }
 
 /**
@@ -275,7 +418,6 @@ function validateClaim(room, player) {
  */
 
 io.on("connection", (socket) => {
-  // send deck & rooms
   socket.emit("deck:list", deck);
   socket.emit("rooms:list", roomsListPublic());
 
@@ -329,22 +471,17 @@ io.on("connection", (socket) => {
     const idx = room.players.findIndex((p) => p.id === socket.id);
     if (idx !== -1) {
       const leaving = room.players[idx];
-
-      // free card
       if (leaving.cardId) {
         room.usedCardIds = room.usedCardIds.filter((x) => x !== leaving.cardId);
       }
-
       room.players.splice(idx, 1);
     }
 
     socket.leave(room.id);
 
-    // if host leaves -> assign new host
     if (room.hostId === socket.id) {
-      if (room.players.length) {
-        room.hostId = room.players[0].id;
-      } else {
+      if (room.players.length) room.hostId = room.players[0].id;
+      else {
         stopCalling(room);
         rooms.delete(room.id);
         broadcastRooms();
@@ -352,7 +489,6 @@ io.on("connection", (socket) => {
       }
     }
 
-    // if playing and everyone left etc.
     if (!room.players.length) {
       stopCalling(room);
       rooms.delete(room.id);
@@ -365,7 +501,6 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    // remove from any room
     for (const room of rooms.values()) {
       const idx = room.players.findIndex((p) => p.id === socket.id);
       if (idx === -1) continue;
@@ -403,17 +538,14 @@ io.on("connection", (socket) => {
     if (!player) return;
     if (player.eliminated) return;
 
-    // if used by others
     const alreadyUsed = room.usedCardIds.includes(cid);
     const selectingSame = player.cardId === cid;
     if (alreadyUsed && !selectingSame) return emitToast(socket, "error", "Tờ dò đã có người chọn.");
 
-    // free old
     if (player.cardId && player.cardId !== cid) {
       room.usedCardIds = room.usedCardIds.filter((x) => x !== player.cardId);
     }
 
-    // set new
     player.cardId = cid;
     if (!room.usedCardIds.includes(cid)) room.usedCardIds.push(cid);
 
@@ -432,9 +564,7 @@ io.on("connection", (socket) => {
     if (idx === -1) return;
     const target = room.players[idx];
     if (target.id === room.hostId) return;
-
-    // only kick who hasn't selected (as requirement)
-    if (target.cardId) return;
+    if (target.cardId) return; // chỉ kick người chưa chọn
 
     room.players.splice(idx, 1);
 
@@ -453,7 +583,6 @@ io.on("connection", (socket) => {
     if (room.status !== "waiting") return;
     if (!allPlayersSelected(room)) return emitToast(socket, "error", "Tất cả người chơi phải chọn tờ dò trước.");
 
-    // reset eliminated flags (new round)
     room.players.forEach((p) => (p.eliminated = false));
     startCalling(room);
     io.to(room.id).emit("game:update", publicRoom(room));
@@ -500,7 +629,6 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // wrong claim -> eliminate
     player.eliminated = true;
     emitToast(socket, "error", "Báo KINH sai! Bạn bị loại (chỉ xem + chat).");
     io.to(room.id).emit("game:update", publicRoom(room));

@@ -6,13 +6,13 @@ let rooms = [];
 let currentView = "home";
 
 let selfId = null;
-let currentRoom = null; // room public object
-let myMarked = new Set(); // local tick only
+let currentRoom = null;
+let myMarked = new Set();
 let chatMessages = [];
 
-// Cache ảnh vé để không render canvas lại hoài
-// key: `${cardId}|${size}` => dataURL
+// Cache ảnh vé
 const ticketImageCache = new Map();
+const ticketLayoutCache = new Map();
 
 // ===== DOM =====
 const el = (id) => document.getElementById(id);
@@ -85,7 +85,25 @@ function ensureName() {
     showToast("error", "Bạn cần nhập tên trước.");
     return null;
   }
+  localStorage.setItem("loto_name", name);
   return name;
+}
+
+function getSavedName() {
+  return (localStorage.getItem("loto_name") || "").trim();
+}
+
+function findMe(room) {
+  if (!room) return null;
+  let me = room.players.find((p) => p.id === selfId);
+  if (me) return me;
+
+  const saved = getSavedName();
+  if (saved) {
+    me = room.players.find((p) => (p.name || "").trim() === saved);
+    if (me) return me;
+  }
+  return null;
 }
 
 function setView(v) {
@@ -118,69 +136,57 @@ function escapeHtml(str) {
     .replaceAll("'", "&#039;");
 }
 
-function openChatModal() {
-  chatModal.classList.remove("hidden");
-  renderChat();
-}
-function closeChatModal() {
-  chatModal.classList.add("hidden");
-}
-
-// ===== Loto logic helpers (block 3x9) =====
+// ===== Loto helpers =====
 function decadeCol(n) {
   if (n === 90) return 8;
   return Math.floor(n / 10);
 }
 
-// 15 numbers -> 3 rows x 9 cols, each row max 5 numbers, blanks are null
-function buildBlockGrid15(numbers15) {
-  const cols = Array.from({ length: 9 }, () => []);
-  (numbers15 || [])
-    .slice()
-    .sort((a, b) => a - b)
-    .forEach((n) => cols[decadeCol(n)].push(n));
-
-  const grid = Array.from({ length: 3 }, () => Array(9).fill(null));
-  const rowCount = [0, 0, 0];
-
-  for (let c = 0; c < 9; c++) {
-    const arr = cols[c];
-    for (const n of arr) {
-      let best = -1;
-      let bestCnt = 999;
-
-      for (let r = 0; r < 3; r++) {
-        if (rowCount[r] >= 5) continue;
-        if (grid[r][c] !== null) continue;
-        if (rowCount[r] < bestCnt) {
-          bestCnt = rowCount[r];
-          best = r;
+// ✅ Build grid 9x9 từ rows (chính xác 5 số / hàng)
+function gridFromRows(rows9) {
+  const grid = Array.from({ length: 9 }, () => Array(9).fill(null));
+  for (let r = 0; r < 9; r++) {
+    const nums = rows9[r] || [];
+    for (const n of nums) {
+      const c = decadeCol(n);
+      if (grid[r][c] === null) grid[r][c] = n;
+      else {
+        // fallback: đặt vào ô trống gần nhất
+        let placed = false;
+        for (let k = 1; k < 9; k++) {
+          const left = c - k;
+          const right = c + k;
+          if (left >= 0 && grid[r][left] === null) { grid[r][left] = n; placed = true; break; }
+          if (right < 9 && grid[r][right] === null) { grid[r][right] = n; placed = true; break; }
         }
-      }
-
-      if (best === -1) {
-        for (let r = 0; r < 3; r++) {
-          if (rowCount[r] < 5) {
-            best = r;
-            break;
-          }
-        }
-      }
-
-      if (best !== -1) {
-        grid[best][c] = n;
-        rowCount[best]++;
+        if (!placed) { /* ignore */ }
       }
     }
   }
-
   return grid;
 }
 
-// ===== Ticket Color Themes (5 màu cho 5 cặp) =====
+// Lấy grid 3x9 cho block b (0..2)
+function getBlockGrid(card, b) {
+  // ưu tiên card.rows -> đúng layout mẫu
+  if (card.rows && card.rows.length === 9) {
+    const full = gridFromRows(card.rows);
+    const start = b * 3;
+    return [full[start], full[start + 1], full[start + 2]];
+  }
+
+  // fallback: nếu server gửi sẵn grid
+  if (card.grid && card.grid.length === 9) {
+    const start = b * 3;
+    return [card.grid[start], card.grid[start + 1], card.grid[start + 2]];
+  }
+
+  // fallback cũ nếu vẫn dùng blocks
+  return Array.from({ length: 3 }, () => Array(9).fill(null));
+}
+
+// ===== Ticket themes =====
 function getThemeByColor(colorKey) {
-  // Các màu này sẽ làm: viền + ô trống + header tint khác nhau
-  // Bạn có thể đổi cho “đậm” hơn/nhạt hơn tùy ý.
   const themes = {
     red: {
       paperTop: "rgba(255,252,238,0.98)",
@@ -195,15 +201,15 @@ function getThemeByColor(colorKey) {
       cellStroke: "rgba(120,40,40,0.18)",
     },
     blue: {
-      paperTop: "rgba(245,252,255,0.98)",
-      paperBottom: "rgba(210,236,255,0.97)",
+      paperTop: "rgba(255,252,240,0.98)",
+      paperBottom: "rgba(255,235,200,0.97)",
       border: "rgba(70,130,255,0.55)",
       dot: "rgba(40,90,170,0.10)",
       title: "rgba(10,35,70,0.88)",
       meta: "rgba(10,35,70,0.62)",
-      blankTop: "rgba(130,185,255,0.95)",
-      blankBottom: "rgba(70,130,255,0.90)",
-      blankStroke: "rgba(20,60,120,0.25)",
+      blankTop: "rgba(255,205,110,0.95)",
+      blankBottom: "rgba(255,175,70,0.92)",
+      blankStroke: "rgba(120,70,0,0.25)",
       cellStroke: "rgba(40,70,120,0.18)",
     },
     green: {
@@ -219,16 +225,16 @@ function getThemeByColor(colorKey) {
       cellStroke: "rgba(20,90,60,0.18)",
     },
     purple: {
-      paperTop: "rgba(252,248,255,0.98)",
-      paperBottom: "rgba(230,220,255,0.97)",
-      border: "rgba(124,92,255,0.55)",
-      dot: "rgba(90,60,170,0.10)",
-      title: "rgba(40,20,80,0.88)",
-      meta: "rgba(40,20,80,0.62)",
-      blankTop: "rgba(190,160,255,0.95)",
-      blankBottom: "rgba(124,92,255,0.90)",
-      blankStroke: "rgba(60,35,120,0.25)",
-      cellStroke: "rgba(70,50,120,0.18)",
+      paperTop: "rgba(255,245,252,0.98)",
+      paperBottom: "rgba(255,220,240,0.97)",
+      border: "rgba(255,105,180,0.55)",
+      dot: "rgba(170,60,120,0.10)",
+      title: "rgba(80,20,50,0.88)",
+      meta: "rgba(80,20,50,0.62)",
+      blankTop: "rgba(255,140,200,0.95)",
+      blankBottom: "rgba(255,90,170,0.90)",
+      blankStroke: "rgba(120,35,80,0.25)",
+      cellStroke: "rgba(120,50,90,0.18)",
     },
     orange: {
       paperTop: "rgba(255,252,240,0.98)",
@@ -243,11 +249,35 @@ function getThemeByColor(colorKey) {
       cellStroke: "rgba(120,70,0,0.18)",
     },
   };
-
   return themes[colorKey] || themes.orange;
 }
 
-// ===== Canvas ticket renderer (tấm hình) =====
+// ===== Ticket layout =====
+function getTicketLayout(cellSize) {
+  if (ticketLayoutCache.has(cellSize)) return ticketLayoutCache.get(cellSize);
+
+  const pad = 16;
+  const gapBlock = 14;
+  const cellGap = 10;
+
+  const cols = 9;
+  const rowsPerBlock = 3;
+  const blocks = 3;
+  const headerH = 58;
+
+  const w = pad * 2 + cols * cellSize + (cols - 1) * cellGap;
+  const h =
+    pad * 2 +
+    headerH +
+    (rowsPerBlock * blocks) * cellSize +
+    ((rowsPerBlock * blocks) - 1) * cellGap +
+    (blocks - 1) * gapBlock;
+
+  const layout = { pad, gapBlock, cellGap, cols, rowsPerBlock, blocks, headerH, w, h, cellSize };
+  ticketLayoutCache.set(cellSize, layout);
+  return layout;
+}
+
 function roundRect(ctx, x, y, w, h, r, fill, stroke) {
   const rr = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
@@ -266,78 +296,53 @@ function renderTicketImage(card, cellSize = 42) {
   if (ticketImageCache.has(cacheKey)) return ticketImageCache.get(cacheKey);
 
   const theme = getThemeByColor(card.color);
-
-  const pad = 16;
-  const gapBlock = 14;
-  const cellGap = 10;
-
-  const cols = 9;
-  const rowsPerBlock = 3;
-  const blocks = 3;
-  const rowsTotal = rowsPerBlock * blocks;
-
-  const headerH = 58;
-
-  const w = pad * 2 + cols * cellSize + (cols - 1) * cellGap;
-  const h =
-    pad * 2 +
-    headerH +
-    rowsTotal * cellSize +
-    (rowsTotal - 1) * cellGap +
-    (blocks - 1) * gapBlock;
+  const L = getTicketLayout(cellSize);
 
   const canvas = document.createElement("canvas");
-  canvas.width = Math.floor(w * 2); // retina
-  canvas.height = Math.floor(h * 2);
+  canvas.width = Math.floor(L.w * 2);
+  canvas.height = Math.floor(L.h * 2);
   const ctx = canvas.getContext("2d");
   ctx.scale(2, 2);
 
-  // Paper-like background (themed)
-  const bg = ctx.createLinearGradient(0, 0, 0, h);
+  const bg = ctx.createLinearGradient(0, 0, 0, L.h);
   bg.addColorStop(0, theme.paperTop);
   bg.addColorStop(1, theme.paperBottom);
   ctx.fillStyle = bg;
-  roundRect(ctx, 0, 0, w, h, 18, true);
+  roundRect(ctx, 0, 0, L.w, L.h, 18, true);
 
-  // Border (themed)
   ctx.lineWidth = 2;
   ctx.strokeStyle = theme.border;
-  roundRect(ctx, 1, 1, w - 2, h - 2, 18, false, true);
+  roundRect(ctx, 1, 1, L.w - 2, L.h - 2, 18, false, true);
 
-  // Tiny pattern dots (themed)
   ctx.fillStyle = theme.dot;
-  for (let i = 10; i < w; i += 18) {
+  for (let i = 10; i < L.w; i += 18) {
     ctx.fillRect(i, 10, 2, 2);
-    ctx.fillRect(i, h - 12, 2, 2);
+    ctx.fillRect(i, L.h - 12, 2, 2);
   }
 
-  // Header text
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-
   ctx.fillStyle = theme.title;
   ctx.font = "900 22px 'Be Vietnam Pro', system-ui, sans-serif";
-  ctx.fillText((card.title || "LÔ TÔ").toUpperCase(), w / 2, pad + 18);
+  ctx.fillText((card.title || "LÔ TÔ").toUpperCase(), L.w / 2, L.pad + 18);
 
   ctx.fillStyle = theme.meta;
   ctx.font = "800 12px 'Be Vietnam Pro', system-ui, sans-serif";
-  ctx.fillText(`${card.colorLabel || ""} ${card.variant || ""} • ${card.id || ""}`, w / 2, pad + 38);
+  ctx.fillText(`${card.colorLabel || ""} ${card.variant || ""} • ${card.id || ""}`, L.w / 2, L.pad + 38);
 
-  // Render 3 blocks
-  const startX = pad;
-  let y = pad + headerH;
+  const startX = L.pad;
+  let y = L.pad + L.headerH;
 
   for (let b = 0; b < 3; b++) {
-    const grid = buildBlockGrid15(card.blocks?.[b] || []);
+    const grid3 = getBlockGrid(card, b);
 
-    // block frame
     ctx.fillStyle = "rgba(255,255,255,0.30)";
     roundRect(
       ctx,
       startX - 6,
       y - 6,
-      cols * cellSize + (cols - 1) * cellGap + 12,
-      rowsPerBlock * cellSize + (rowsPerBlock - 1) * cellGap + 12,
+      L.cols * L.cellSize + (L.cols - 1) * L.cellGap + 12,
+      L.rowsPerBlock * L.cellSize + (L.rowsPerBlock - 1) * L.cellGap + 12,
       14,
       true
     );
@@ -347,53 +352,90 @@ function renderTicketImage(card, cellSize = 42) {
       ctx,
       startX - 6,
       y - 6,
-      cols * cellSize + (cols - 1) * cellGap + 12,
-      rowsPerBlock * cellSize + (rowsPerBlock - 1) * cellGap + 12,
+      L.cols * L.cellSize + (L.cols - 1) * L.cellGap + 12,
+      L.rowsPerBlock * L.cellSize + (L.rowsPerBlock - 1) * L.cellGap + 12,
       14,
       false,
       true
     );
 
-    for (let r = 0; r < rowsPerBlock; r++) {
-      for (let c = 0; c < cols; c++) {
-        const val = grid[r][c];
-        const x = startX + c * (cellSize + cellGap);
-        const yy = y + r * (cellSize + cellGap);
+    for (let r = 0; r < 3; r++) {
+      for (let c = 0; c < 9; c++) {
+        const val = grid3[r][c];
+        const x = startX + c * (L.cellSize + L.cellGap);
+        const yy = y + r * (L.cellSize + L.cellGap);
 
         if (val === null) {
-          // themed blank cell
-          const g = ctx.createLinearGradient(x, yy, x, yy + cellSize);
+          const g = ctx.createLinearGradient(x, yy, x, yy + L.cellSize);
           g.addColorStop(0, theme.blankTop);
           g.addColorStop(1, theme.blankBottom);
           ctx.fillStyle = g;
-          roundRect(ctx, x, yy, cellSize, cellSize, 10, true);
+          roundRect(ctx, x, yy, L.cellSize, L.cellSize, 10, true);
           ctx.strokeStyle = theme.blankStroke;
           ctx.lineWidth = 1;
-          roundRect(ctx, x, yy, cellSize, cellSize, 10, false, true);
+          roundRect(ctx, x, yy, L.cellSize, L.cellSize, 10, false, true);
         } else {
-          // number cell
           ctx.fillStyle = "rgba(255,255,255,0.92)";
-          roundRect(ctx, x, yy, cellSize, cellSize, 10, true);
+          roundRect(ctx, x, yy, L.cellSize, L.cellSize, 10, true);
           ctx.strokeStyle = theme.cellStroke;
           ctx.lineWidth = 1;
-          roundRect(ctx, x, yy, cellSize, cellSize, 10, false, true);
+          roundRect(ctx, x, yy, L.cellSize, L.cellSize, 10, false, true);
 
-          // number text
           ctx.fillStyle = "rgba(12,12,12,0.92)";
-          ctx.font = `900 ${Math.max(14, Math.floor(cellSize * 0.46))}px 'Be Vietnam Pro', system-ui, sans-serif`;
+          ctx.font = `900 ${Math.max(14, Math.floor(L.cellSize * 0.46))}px 'Be Vietnam Pro', system-ui, sans-serif`;
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          ctx.fillText(String(val), x + cellSize / 2, yy + cellSize / 2 + 1);
+          ctx.fillText(String(val), x + L.cellSize / 2, yy + L.cellSize / 2 + 1);
         }
       }
     }
 
-    y += rowsPerBlock * cellSize + (rowsPerBlock - 1) * cellGap + gapBlock;
+    y += 3 * L.cellSize + 2 * L.cellGap + L.gapBlock;
   }
 
   const url = canvas.toDataURL("image/png");
   ticketImageCache.set(cacheKey, url);
   return url;
+}
+
+// ===== Overlay percent positioning =====
+function buildOverlayRects(card, cellSize) {
+  const L = getTicketLayout(cellSize);
+
+  // full grid 9x9 theo rows
+  let fullGrid;
+  if (card.rows && card.rows.length === 9) fullGrid = gridFromRows(card.rows);
+  else if (card.grid && card.grid.length === 9) fullGrid = card.grid;
+  else fullGrid = Array.from({ length: 9 }, () => Array(9).fill(null));
+
+  const rects = [];
+  const startX = L.pad;
+  let y = L.pad + L.headerH;
+
+  for (let b = 0; b < 3; b++) {
+    const startRow = b * 3;
+    for (let r = 0; r < 3; r++) {
+      const rr = startRow + r;
+      for (let c = 0; c < 9; c++) {
+        const val = fullGrid[rr][c];
+        if (val === null) continue;
+
+        const x = startX + c * (L.cellSize + L.cellGap);
+        const yy = y + r * (L.cellSize + L.cellGap);
+
+        rects.push({
+          val,
+          left: (x / L.w) * 100,
+          top: (yy / L.h) * 100,
+          width: (L.cellSize / L.w) * 100,
+          height: (L.cellSize / L.h) * 100,
+        });
+      }
+    }
+    y += 3 * L.cellSize + 2 * L.cellGap + L.gapBlock;
+  }
+
+  return rects;
 }
 
 // ===== Renderers =====
@@ -430,6 +472,28 @@ function renderRooms() {
   }
 }
 
+function renderChat() {
+  const html = chatMessages
+    .map(
+      (m) => `
+    <div class="msg">
+      <div class="meta">${escapeHtml(m.from)} • ${formatTime(m.at)}</div>
+      <div>${escapeHtml(m.text)}</div>
+    </div>
+  `
+    )
+    .join("");
+
+  if (chatBoxLobby) chatBoxLobby.innerHTML = html;
+  if (chatBoxGame) chatBoxGame.innerHTML = html;
+  if (chatBoxModal) chatBoxModal.innerHTML = html;
+
+  [chatBoxLobby, chatBoxGame, chatBoxModal].forEach((box) => {
+    if (!box) return;
+    box.scrollTop = box.scrollHeight;
+  });
+}
+
 function renderLobby(room) {
   lobbyRoomTitle.textContent = `Phòng: ${room.name}`;
   const host = room.players.find((p) => p.id === room.hostId);
@@ -437,8 +501,8 @@ function renderLobby(room) {
     host?.name || "?"
   )}</b>`;
 
-  const me = room.players.find((p) => p.id === selfId);
-  const iAmHost = selfId === room.hostId;
+  const me = findMe(room);
+  const iAmHost = (me?.id || selfId) === room.hostId;
 
   const allSelected = room.players.length >= 2 && room.players.every((p) => !!p.cardId);
   btnStartGame.classList.toggle("hidden", !iAmHost || room.status !== "waiting");
@@ -446,7 +510,7 @@ function renderLobby(room) {
 
   btnResetGame.classList.toggle("hidden", !iAmHost || room.status !== "ended");
 
-  // Players list
+  // Players
   playersList.innerHTML = "";
   room.players.forEach((p) => {
     const row = document.createElement("div");
@@ -475,7 +539,7 @@ function renderLobby(room) {
     playersList.appendChild(row);
   });
 
-  // Deck grid (ticket as IMAGE)
+  // Deck
   deckGrid.innerHTML = "";
   deck.forEach((card) => {
     const used = room.usedCardIds.includes(card.id);
@@ -486,7 +550,6 @@ function renderLobby(room) {
     wrap.className = "deck-card" + (selectedByMe ? " selected" : "") + (disabled ? " disabled" : "");
 
     const imgUrl = renderTicketImage(card, 30);
-
     wrap.innerHTML = `
       <div class="ticket-img-wrap">
         <img class="ticket-img" src="${imgUrl}" alt="ticket"/>
@@ -508,11 +571,11 @@ function renderLobby(room) {
 }
 
 function renderGame(room) {
-  const me = room.players.find((p) => p.id === selfId);
+  const me = findMe(room);
 
   currentNumber.textContent = room.currentNumber ?? "--";
 
-  // History
+  // history
   historyNumbers.innerHTML = "";
   const hist = room.calledNumbers.slice().reverse();
   hist.forEach((n, idx) => {
@@ -522,7 +585,7 @@ function renderGame(room) {
     historyNumbers.appendChild(d);
   });
 
-  // Scoreboard
+  // scoreboard
   scoreBoard.innerHTML = "";
   room.players
     .slice()
@@ -543,18 +606,18 @@ function renderGame(room) {
       scoreBoard.appendChild(row);
     });
 
-  // My ticket as IMAGE + overlay click
+  // my ticket
   myCardGrid.innerHTML = "";
-
   if (!me?.cardId) {
     myCardMeta.textContent = "Bạn chưa chọn tờ dò.";
   } else {
     const c = deck.find((x) => x.id === me.cardId);
-    const card = c || { id: me.cardId, title: "LÔ TÔ", color: "orange", colorLabel: "", variant: "", blocks: [[], [], []] };
+    const card = c || { id: me.cardId, title: "LÔ TÔ", color: "orange", colorLabel: "", variant: "", rows: [] };
     myCardMeta.textContent = c ? `${c.colorLabel} ${c.variant} • ID ${c.id}` : `ID ${me.cardId}`;
 
-    const imgUrl = renderTicketImage(card, 48);
-    const canInteract = !me.eliminated && room.status === "playing";
+    const renderCellSize = 48;
+    const imgUrl = renderTicketImage(card, renderCellSize);
+    const canInteract = !!me && !me.eliminated && room.status === "playing";
 
     const wrap = document.createElement("div");
     wrap.className = "ticketPlayWrap";
@@ -564,85 +627,45 @@ function renderGame(room) {
     img.src = imgUrl;
 
     const overlay = document.createElement("div");
-    overlay.className = "ticketOverlay" + (canInteract ? "" : " disabled");
+    overlay.className = "ticketOverlayAbs" + (canInteract ? "" : " disabled");
 
-    const blocks = card.blocks || [[], [], []];
-    const grids = blocks.map((b) => buildBlockGrid15(b || []));
+    const rects = buildOverlayRects(card, renderCellSize);
 
-    // 9 rows total, but we also insert 2 spacer rows => total 11 overlay rows
-    for (let rr = 0; rr < 9; rr++) {
-      for (let cc = 0; cc < 9; cc++) {
-        const b = Math.floor(rr / 3);
-        const r = rr % 3;
-        const val = grids[b]?.[r]?.[cc] ?? null;
+    rects.forEach(({ val, left, top, width, height }) => {
+      const cell = document.createElement("div");
+      cell.className = "ovAbsCell" + (myMarked.has(val) ? " marked" : "");
+      cell.style.left = `${left}%`;
+      cell.style.top = `${top}%`;
+      cell.style.width = `${width}%`;
+      cell.style.height = `${height}%`;
+      cell.title = String(val);
 
-        const cell = document.createElement("div");
-        cell.className = "ovCell" + (val === null ? " blank" : " num");
-
-        if (val !== null) {
-          if (myMarked.has(val)) cell.classList.add("marked");
-          cell.title = String(val);
-
-          if (canInteract) {
-            cell.addEventListener("click", () => {
-              if (myMarked.has(val)) myMarked.delete(val);
-              else myMarked.add(val);
-              renderGame(room);
-            });
-          }
-        }
-        overlay.appendChild(cell);
+      if (canInteract) {
+        cell.addEventListener("click", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (myMarked.has(val)) myMarked.delete(val);
+          else myMarked.add(val);
+          renderGame(room);
+        });
       }
 
-      if (rr === 2 || rr === 5) {
-        for (let i = 0; i < 9; i++) {
-          const sp = document.createElement("div");
-          sp.className = "ovCell spacer";
-          overlay.appendChild(sp);
-        }
-      }
-    }
+      overlay.appendChild(cell);
+    });
 
     wrap.appendChild(img);
     wrap.appendChild(overlay);
     myCardGrid.appendChild(wrap);
   }
 
-  // Status + claim button
-  if (room.status === "playing") {
-    statusBadge.textContent = me?.eliminated ? "Bị loại" : "Đang chơi";
-  } else if (room.status === "ended") {
-    statusBadge.textContent = "Kết thúc ván";
-  } else {
-    statusBadge.textContent = "Chờ";
-  }
+  if (room.status === "playing") statusBadge.textContent = me?.eliminated ? "Bị loại" : "Đang chơi";
+  else if (room.status === "ended") statusBadge.textContent = "Kết thúc ván";
+  else statusBadge.textContent = "Chờ";
 
   btnClaim.disabled = !me || me.eliminated || room.status !== "playing";
   btnClaim.textContent = me?.eliminated ? "Bạn đã bị loại" : "Báo KINH";
 
   renderChat();
-}
-
-function renderChat() {
-  const html = chatMessages
-    .map(
-      (m) => `
-    <div class="msg">
-      <div class="meta">${escapeHtml(m.from)} • ${formatTime(m.at)}</div>
-      <div>${escapeHtml(m.text)}</div>
-    </div>
-  `
-    )
-    .join("");
-
-  if (chatBoxLobby) chatBoxLobby.innerHTML = html;
-  if (chatBoxGame) chatBoxGame.innerHTML = html;
-  if (chatBoxModal) chatBoxModal.innerHTML = html;
-
-  [chatBoxLobby, chatBoxGame, chatBoxModal].forEach((box) => {
-    if (!box) return;
-    box.scrollTop = box.scrollHeight;
-  });
 }
 
 // ===== UI Events =====
@@ -698,10 +721,10 @@ btnLeaveRoom.addEventListener("click", () => {
   setView("home");
 });
 
-btnOpenChat.addEventListener("click", openChatModal);
-btnCloseChat.addEventListener("click", closeChatModal);
+btnOpenChat.addEventListener("click", () => chatModal.classList.remove("hidden"));
+btnCloseChat.addEventListener("click", () => chatModal.classList.add("hidden"));
 chatModal.addEventListener("click", (e) => {
-  if (e.target === chatModal) closeChatModal();
+  if (e.target === chatModal) chatModal.classList.add("hidden");
 });
 
 function wireChat(inputEl, sendBtn) {
@@ -725,7 +748,8 @@ wireChat(chatInputModal, chatSendModal);
 // ===== Socket Events =====
 socket.on("deck:list", (d) => {
   deck = d || [];
-  ticketImageCache.clear(); // đổi theme/đổi deck => clear
+  ticketImageCache.clear();
+  ticketLayoutCache.clear();
 });
 
 socket.on("rooms:list", (list) => {
@@ -733,9 +757,7 @@ socket.on("rooms:list", (list) => {
   if (currentView === "join") renderRooms();
 });
 
-socket.on("toast", ({ type, message }) => {
-  showToast(type, message);
-});
+socket.on("toast", ({ type, message }) => showToast(type, message));
 
 socket.on("room:joined", ({ room, selfId: sid }) => {
   selfId = sid;
