@@ -1,4 +1,3 @@
-const path = require("path");
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -7,546 +6,516 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-app.use(express.static(path.join(__dirname, "public")));
-
 const PORT = process.env.PORT || 3000;
 
-// ====== GAME CONFIG ======
-const MIN_NUM = 1;
-const MAX_NUM = 90;
-const CALL_INTERVAL_MS = 10_000; // 10s
+app.use(express.static("public"));
 
-// ====== In-memory store ======
 /**
- * rooms[roomId] = {
- *   id, name, maxPlayers,
- *   hostId,
- *   status: "waiting" | "playing" | "ended",
- *   createdAt,
- *   players: Map(socketId => { id, name, cardId, eliminated, score }),
- *   usedCardIds: Set,
- *   calledNumbers: number[],
- *   remainingNumbers: Set<number>,
- *   currentNumber: number|null,
- *   timer: NodeJS.Timeout|null,
- * }
+ * ============================================================
+ *  DECK (10 tờ dò) — 5 cặp màu, mỗi cặp 2 tờ (A/B)
+ *  Title đổi theo yêu cầu:
+ *    - "TÂN TÂN"   -> "RỰC RỠ"
+ *    - "MIỀN TÂY"  -> "THÀNH CÔNG"
+ *    - "HÊN XUI"   -> "HUY HOÀNG"
+ * ============================================================
  */
-const rooms = new Map();
 
-// ====== Utility ======
-function uid(len = 6) {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out = "";
-  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+// Helper: lấy cột theo hệ số (1-9, 10-19, ..., 80-90)
+function decadeCol(n) {
+  if (n === 90) return 8;
+  return Math.floor(n / 10);
+}
+
+// Generate 15 numbers theo rule: tổng 15 số/ block 3x9, mỗi row max 5 số
+// (để cho ra đúng kiểu lô tô truyền thống có ô trống)
+function generateBlock15(seedNumbers) {
+  // seedNumbers: nếu có thì dùng lại; nếu không tự sinh
+  if (seedNumbers && Array.isArray(seedNumbers) && seedNumbers.length === 15) {
+    return seedNumbers.slice().sort((a, b) => a - b);
+  }
+
+  // Mỗi block chọn 15 số ngẫu nhiên từ 1..90 (không trùng trong block)
+  const set = new Set();
+  while (set.size < 15) {
+    set.add(1 + Math.floor(Math.random() * 90));
+  }
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+// Build a full card: 3 blocks * 15 numbers = 45 numbers total (non-duplicate)
+function generateCardNumbers45() {
+  const used = new Set();
+  const blocks = [];
+
+  for (let b = 0; b < 3; b++) {
+    const blockSet = new Set();
+    while (blockSet.size < 15) {
+      const n = 1 + Math.floor(Math.random() * 90);
+      if (used.has(n)) continue;
+      used.add(n);
+      blockSet.add(n);
+    }
+    blocks.push(Array.from(blockSet).sort((a, b) => a - b));
+  }
+  return blocks;
+}
+
+// Make complementary card for pair B: dùng các số "đối" theo cột để tạo cảm giác tương phản
+// (Không bắt buộc 100% đối từng số, nhưng đảm bảo khác biệt rõ)
+function makeComplementBlocks(blocksA) {
+  const used = new Set();
+  const blocksB = [];
+
+  // map n -> "đối" trong cùng decade, kiểu 1<->9, 2<->8...; 10<->19...
+  function mirrorInDecade(n) {
+    if (n === 90) return 80; // 90 đối 80 (tuỳ ý)
+    const d = decadeCol(n); // 0..8
+    const start = d * 10;
+    const end = d === 8 ? 90 : d * 10 + 9;
+    // nếu decade 0 (1-9): start=0, end=9 (nhưng ta không dùng 0)
+    // điều chỉnh cho decade 0: range 1..9
+    const s = d === 0 ? 1 : start;
+    const e = d === 8 ? 90 : end;
+    return s + (e - n);
+  }
+
+  for (let b = 0; b < 3; b++) {
+    const arr = blocksA[b].slice().sort((a, b) => a - b);
+    const cand = [];
+
+    for (const n of arr) {
+      let m = mirrorInDecade(n);
+      // tránh trùng trong toàn card B
+      let guard = 0;
+      while (used.has(m) && guard < 40) {
+        // thử lân cận cùng decade
+        m = m === 90 ? 89 : m + 1;
+        if (m > 90) m = 1;
+        guard++;
+      }
+      cand.push(m);
+      used.add(m);
+    }
+
+    // nếu vì tránh trùng mà thiếu/dup, fix nhẹ
+    const setBlock = new Set(cand);
+    while (setBlock.size < 15) {
+      const x = 1 + Math.floor(Math.random() * 90);
+      if (used.has(x)) continue;
+      used.add(x);
+      setBlock.add(x);
+    }
+    blocksB.push(Array.from(setBlock).sort((a, b) => a - b));
+  }
+
+  return blocksB;
+}
+
+// 5 cặp màu: red, blue, green, purple, orange
+// Tên cặp:
+const PAIRS = [
+  { key: "red", colorLabel: "Đỏ", title: "RỰC RỠ" },         // formerly TÂN TÂN
+  { key: "blue", colorLabel: "Xanh dương", title: "THÀNH CÔNG" }, // formerly MIỀN TÂY
+  { key: "green", colorLabel: "Xanh lá", title: "THÀNH CÔNG" },   // (bạn muốn 5 cặp 5 màu, title có thể trùng)
+  { key: "purple", colorLabel: "Tím", title: "HUY HOÀNG" },   // formerly HÊN XUI
+  { key: "orange", colorLabel: "Cam", title: "HUY HOÀNG" },   // (title có thể trùng)
+];
+
+function createDeck10() {
+  const out = [];
+  for (const p of PAIRS) {
+    const blocksA = generateCardNumbers45();
+    const blocksB = makeComplementBlocks(blocksA);
+
+    out.push({
+      id: `${p.key}-A`,
+      title: p.title,
+      color: p.key,
+      colorLabel: p.colorLabel,
+      variant: "A",
+      blocks: blocksA,
+    });
+
+    out.push({
+      id: `${p.key}-B`,
+      title: p.title,
+      color: p.key,
+      colorLabel: p.colorLabel,
+      variant: "B",
+      blocks: blocksB,
+    });
+  }
   return out;
 }
 
-function now() {
-  return Date.now();
+const deck = createDeck10();
+
+/**
+ * ============================================================
+ *  ROOMS / GAME STATE
+ * ============================================================
+ */
+
+const rooms = new Map();
+
+function makeRoomId() {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  let s = "";
+  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
 }
 
-function getRoomPublic(room) {
-  const playersArr = Array.from(room.players.values()).map((p) => ({
-    id: p.id,
-    name: p.name,
-    cardId: p.cardId,
-    eliminated: p.eliminated,
-    score: p.score,
-    isHost: p.id === room.hostId,
-  }));
-
+function publicRoom(room) {
   return {
     id: room.id,
     name: room.name,
     maxPlayers: room.maxPlayers,
     hostId: room.hostId,
-    status: room.status,
-    createdAt: room.createdAt,
-    players: playersArr,
-    usedCardIds: Array.from(room.usedCardIds),
-    calledNumbers: room.calledNumbers,
+    status: room.status, // waiting|playing|ended
+    players: room.players.map((p) => ({
+      id: p.id,
+      name: p.name,
+      isHost: p.id === room.hostId,
+      cardId: p.cardId || null,
+      score: p.score || 0,
+      eliminated: !!p.eliminated,
+    })),
+    usedCardIds: room.usedCardIds.slice(),
+    calledNumbers: room.calledNumbers.slice(),
     currentNumber: room.currentNumber,
   };
 }
 
-function broadcastRoomsList() {
-  const list = Array.from(rooms.values()).map((r) => ({
-    id: r.id,
-    name: r.name,
-    maxPlayers: r.maxPlayers,
-    playerCount: r.players.size,
-    status: r.status === "waiting" ? "Đang chờ" : r.status === "playing" ? "Đang chơi" : "Kết thúc",
-  }));
-  io.emit("rooms:list", list);
-}
-
-function makeNumbersSet(min = MIN_NUM, max = MAX_NUM) {
-  const s = new Set();
-  for (let i = min; i <= max; i++) s.add(i);
-  return s;
-}
-
-function pickRandomFromSet(set) {
-  const idx = Math.floor(Math.random() * set.size);
-  let i = 0;
-  for (const val of set) {
-    if (i === idx) return val;
-    i++;
-  }
-  return null;
-}
-
-// ====== Deck: 10 tờ dò (5 màu x A/B)
-// 1 tờ dò hoàn chỉnh = 3 block (mỗi block 3x9, 15 số) => tổng 9x9, 45 số
-function buildDeck() {
-  const ticketsA = [
-    {
-      title: "TÂN TÂN",
-      blocks: [
-        [7, 16, 32, 66, 73, 18, 29, 46, 55, 88, 2, 23, 34, 50, 75],
-        [4, 30, 40, 61, 78, 10, 27, 41, 56, 86, 20, 39, 59, 60, 83],
-        [9, 24, 51, 64, 81, 3, 28, 48, 53, 80, 17, 37, 45, 63, 77],
-      ],
-    },
-    {
-      title: "MIỀN TÂY",
-      blocks: [
-        [1, 12, 25, 33, 70, 8, 19, 42, 54, 89, 6, 21, 38, 65, 76],
-        [5, 14, 26, 47, 72, 11, 22, 35, 58, 84, 2, 29, 44, 60, 90],
-        [3, 18, 27, 49, 71, 7, 16, 32, 66, 73, 4, 30, 40, 61, 78],
-      ],
-    },
-    {
-      title: "VUI VẺ",
-      blocks: [
-        [6, 15, 24, 52, 81, 9, 14, 28, 48, 80, 1, 17, 37, 45, 63],
-        [2, 13, 29, 50, 75, 5, 10, 27, 41, 56, 20, 39, 59, 60, 83],
-        [7, 16, 32, 66, 73, 8, 19, 42, 54, 89, 4, 30, 40, 61, 78],
-      ],
-    },
-    {
-      title: "HÊN XUI",
-      blocks: [
-        [9, 11, 23, 34, 75, 2, 18, 29, 46, 55, 7, 16, 32, 66, 73],
-        [4, 10, 27, 41, 56, 20, 39, 59, 60, 83, 5, 14, 26, 47, 72],
-        [1, 12, 25, 33, 70, 6, 21, 38, 65, 76, 3, 28, 48, 53, 80],
-      ],
-    },
-    {
-      title: "ĐẮC LỘC",
-      blocks: [
-        [8, 19, 42, 54, 89, 6, 15, 24, 52, 81, 1, 17, 37, 45, 63],
-        [7, 16, 32, 66, 73, 4, 30, 40, 61, 78, 9, 24, 51, 64, 81],
-        [2, 13, 29, 50, 75, 5, 14, 26, 47, 72, 3, 18, 27, 49, 71],
-      ],
-    },
-  ];
-
-  const colors = [
-    { key: "red", label: "Đỏ" },
-    { key: "blue", label: "Xanh dương" },
-    { key: "green", label: "Xanh lá" },
-    { key: "purple", label: "Tím" },
-    { key: "orange", label: "Cam" },
-  ];
-
-  const deck = [];
-  const comp = (n) => 91 - n;
-
-  for (let i = 0; i < 5; i++) {
-    const baseTicket = ticketsA[i];
-
-    deck.push({
-      id: `${colors[i].key}-A`,
-      color: colors[i].key,
-      colorLabel: colors[i].label,
-      variant: "A",
-      title: baseTicket.title,
-      blocks: baseTicket.blocks.map((b) => b.slice()),
-    });
-
-    deck.push({
-      id: `${colors[i].key}-B`,
-      color: colors[i].key,
-      colorLabel: colors[i].label,
-      variant: "B",
-      title: baseTicket.title,
-      blocks: baseTicket.blocks.map((b) => b.map(comp)),
+function roomsListPublic() {
+  const arr = [];
+  for (const room of rooms.values()) {
+    arr.push({
+      id: room.id,
+      name: room.name,
+      maxPlayers: room.maxPlayers,
+      playerCount: room.players.length,
+      status:
+        room.status === "waiting"
+          ? "Đang chờ"
+          : room.status === "playing"
+          ? "Đang chơi"
+          : "Kết thúc",
     });
   }
-
-  return deck;
+  arr.sort((a, b) => a.name.localeCompare(b.name));
+  return arr;
 }
 
-const DECK = buildDeck();
-
-function getCardById(cardId) {
-  return DECK.find((c) => c.id === cardId) || null;
+function broadcastRooms() {
+  io.emit("rooms:list", roomsListPublic());
 }
 
-/**
- * ✅ Rule KINH hiện tại: Hoàn thành BẤT KỲ 1 BLOCK (15 số).
- * Nếu bạn muốn "KINH cả tờ" (45 số) => đổi `.some` thành `.every`.
- */
-function checkWin(cardId, calledNumbers) {
-  const card = getCardById(cardId);
-  if (!card) return false;
-  const called = new Set(calledNumbers);
-  return (card.blocks || []).some((block) => block.every((n) => called.has(n)));
+function emitToast(sock, type, message) {
+  sock.emit("toast", { type, message });
 }
 
-function stopRoomTimer(room) {
+function addChat(room, from, text) {
+  const msg = { from, text, at: Date.now() };
+  io.to(room.id).emit("chat:msg", msg);
+}
+
+function allPlayersSelected(room) {
+  return room.players.length >= 2 && room.players.every((p) => !!p.cardId);
+}
+
+function startCalling(room) {
+  stopCalling(room);
+  room.status = "playing";
+  room.calledNumbers = [];
+  room.currentNumber = null;
+
+  // numbers 1..90 shuffled
+  room.remainingNumbers = Array.from({ length: 90 }, (_, i) => i + 1);
+  for (let i = room.remainingNumbers.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [room.remainingNumbers[i], room.remainingNumbers[j]] = [room.remainingNumbers[j], room.remainingNumbers[i]];
+  }
+
+  room.timer = setInterval(() => {
+    if (room.status !== "playing") return;
+    if (!room.remainingNumbers.length) {
+      room.status = "ended";
+      stopCalling(room);
+      io.to(room.id).emit("game:update", publicRoom(room));
+      io.to(room.id).emit("round:ended", { room: publicRoom(room), reason: { winnerName: null } });
+      return;
+    }
+    const n = room.remainingNumbers.shift();
+    room.currentNumber = n;
+    room.calledNumbers.push(n);
+    io.to(room.id).emit("game:update", publicRoom(room));
+  }, 10000);
+}
+
+function stopCalling(room) {
   if (room.timer) clearInterval(room.timer);
   room.timer = null;
 }
 
-function startGame(room) {
-  room.status = "playing";
-  room.calledNumbers = [];
-  room.currentNumber = null;
-  room.remainingNumbers = makeNumbersSet(MIN_NUM, MAX_NUM);
+function validateClaim(room, player) {
+  // Player must have a card
+  const card = deck.find((c) => c.id === player.cardId);
+  if (!card) return false;
 
-  // Reset eliminated for new round (keep scores)
-  for (const p of room.players.values()) {
-    p.eliminated = false;
-  }
-
-  stopRoomTimer(room);
-
-  // Call one number immediately (optional)
-  callOneImmediate(room);
-
-  room.timer = setInterval(() => {
-    if (!rooms.has(room.id) || room.status !== "playing") {
-      stopRoomTimer(room);
-      return;
-    }
-
-    if (room.remainingNumbers.size === 0) {
-      endRound(room, { type: "no_more_numbers" });
-      return;
-    }
-
-    const num = pickRandomFromSet(room.remainingNumbers);
-    room.remainingNumbers.delete(num);
-    room.currentNumber = num;
-    room.calledNumbers.push(num);
-
-    io.to(room.id).emit("game:update", getRoomPublic(room));
-  }, CALL_INTERVAL_MS);
-
-  io.to(room.id).emit("game:update", getRoomPublic(room));
-  broadcastRoomsList();
+  // Win condition: "KINH" -> all numbers on card must be called
+  const allNums = card.blocks.flat();
+  const called = new Set(room.calledNumbers);
+  return allNums.every((n) => called.has(n));
 }
 
-function callOneImmediate(room) {
-  if (room.remainingNumbers.size === 0) return;
-  const num = pickRandomFromSet(room.remainingNumbers);
-  room.remainingNumbers.delete(num);
-  room.currentNumber = num;
-  room.calledNumbers.push(num);
-}
+/**
+ * ============================================================
+ *  SOCKET.IO
+ * ============================================================
+ */
 
-function endRound(room, reason) {
-  stopRoomTimer(room);
-  room.status = "ended";
-  room.currentNumber = null;
-  io.to(room.id).emit("round:ended", { room: getRoomPublic(room), reason });
-  broadcastRoomsList();
-}
-
-function canStart(room) {
-  if (room.players.size < 2) return false;
-  for (const p of room.players.values()) {
-    if (!p.cardId) return false;
-  }
-  return true;
-}
-
-function isHost(room, socketId) {
-  return room.hostId === socketId;
-}
-
-// ====== Socket.IO ======
 io.on("connection", (socket) => {
-  socket.emit("deck:list", DECK);
-
-  socket.emit(
-    "rooms:list",
-    Array.from(rooms.values()).map((r) => ({
-      id: r.id,
-      name: r.name,
-      maxPlayers: r.maxPlayers,
-      playerCount: r.players.size,
-      status: r.status === "waiting" ? "Đang chờ" : r.status === "playing" ? "Đang chơi" : "Kết thúc",
-    }))
-  );
+  // send deck & rooms
+  socket.emit("deck:list", deck);
+  socket.emit("rooms:list", roomsListPublic());
 
   socket.on("room:create", ({ playerName, roomName, maxPlayers }) => {
-    try {
-      const name = (playerName || "").trim().slice(0, 24);
-      const rname = (roomName || "").trim().slice(0, 28);
-      const mp = Math.max(2, Math.min(10, Number(maxPlayers || 2)));
+    const name = String(playerName || "").trim();
+    if (!name) return emitToast(socket, "error", "Bạn cần nhập tên.");
 
-      if (!name) throw new Error("Vui lòng nhập tên.");
-      if (!rname) throw new Error("Vui lòng đặt tên phòng.");
+    const room = {
+      id: makeRoomId(),
+      name: String(roomName || "").trim() || "Phòng mới",
+      maxPlayers: Math.max(2, Math.min(10, Number(maxPlayers || 2))),
+      hostId: socket.id,
+      status: "waiting",
+      players: [],
+      usedCardIds: [],
+      calledNumbers: [],
+      currentNumber: null,
+      remainingNumbers: [],
+      timer: null,
+    };
 
-      const id = uid(6);
+    room.players.push({ id: socket.id, name, score: 0, cardId: null, eliminated: false });
+    rooms.set(room.id, room);
 
-      const room = {
-        id,
-        name: rname,
-        maxPlayers: mp,
-        hostId: socket.id,
-        status: "waiting",
-        createdAt: now(),
-        players: new Map(),
-        usedCardIds: new Set(),
-        calledNumbers: [],
-        remainingNumbers: makeNumbersSet(),
-        currentNumber: null,
-        timer: null,
-      };
-
-      room.players.set(socket.id, {
-        id: socket.id,
-        name,
-        cardId: null,
-        eliminated: false,
-        score: 0,
-      });
-
-      rooms.set(id, room);
-
-      socket.join(id);
-      socket.emit("room:joined", { room: getRoomPublic(room), selfId: socket.id });
-      broadcastRoomsList();
-    } catch (e) {
-      socket.emit("toast", { type: "error", message: e.message || "Tạo phòng thất bại." });
-    }
+    socket.join(room.id);
+    socket.emit("room:joined", { room: publicRoom(room), selfId: socket.id });
+    broadcastRooms();
   });
 
   socket.on("room:join", ({ playerName, roomId }) => {
-    try {
-      const name = (playerName || "").trim().slice(0, 24);
-      const id = (roomId || "").trim();
+    const name = String(playerName || "").trim();
+    const rid = String(roomId || "").trim().toUpperCase();
 
-      if (!name) throw new Error("Vui lòng nhập tên.");
-      const room = rooms.get(id);
-      if (!room) throw new Error("Không tìm thấy phòng.");
-      if (room.status !== "waiting") throw new Error("Phòng đang chơi, không thể vào.");
-      if (room.players.size >= room.maxPlayers) throw new Error("Phòng đã đủ người.");
+    const room = rooms.get(rid);
+    if (!room) return emitToast(socket, "error", "Không tìm thấy phòng.");
+    if (room.status !== "waiting") return emitToast(socket, "error", "Phòng đang chơi, không thể vào.");
+    if (room.players.length >= room.maxPlayers) return emitToast(socket, "error", "Phòng đã đủ người.");
 
-      room.players.set(socket.id, {
-        id: socket.id,
-        name,
-        cardId: null,
-        eliminated: false,
-        score: 0,
-      });
-
-      socket.join(id);
-      io.to(id).emit("lobby:update", getRoomPublic(room));
-      socket.emit("room:joined", { room: getRoomPublic(room), selfId: socket.id });
-      broadcastRoomsList();
-    } catch (e) {
-      socket.emit("toast", { type: "error", message: e.message || "Tham gia phòng thất bại." });
-    }
+    room.players.push({ id: socket.id, name, score: 0, cardId: null, eliminated: false });
+    socket.join(room.id);
+    socket.emit("room:joined", { room: publicRoom(room), selfId: socket.id });
+    io.to(room.id).emit("lobby:update", publicRoom(room));
+    broadcastRooms();
   });
 
   socket.on("room:leave", ({ roomId }) => {
-    const room = rooms.get(roomId);
+    const rid = String(roomId || "").trim().toUpperCase();
+    const room = rooms.get(rid);
     if (!room) return;
 
-    const p = room.players.get(socket.id);
-    if (p?.cardId) room.usedCardIds.delete(p.cardId);
+    const idx = room.players.findIndex((p) => p.id === socket.id);
+    if (idx !== -1) {
+      const leaving = room.players[idx];
 
-    room.players.delete(socket.id);
-    socket.leave(roomId);
+      // free card
+      if (leaving.cardId) {
+        room.usedCardIds = room.usedCardIds.filter((x) => x !== leaving.cardId);
+      }
 
+      room.players.splice(idx, 1);
+    }
+
+    socket.leave(room.id);
+
+    // if host leaves -> assign new host
     if (room.hostId === socket.id) {
-      const next = room.players.values().next().value;
-      if (next) {
-        room.hostId = next.id;
-        io.to(roomId).emit("toast", { type: "info", message: "Chủ phòng đã rời. Đã chuyển quyền chủ phòng." });
+      if (room.players.length) {
+        room.hostId = room.players[0].id;
       } else {
-        stopRoomTimer(room);
-        rooms.delete(roomId);
-        broadcastRoomsList();
+        stopCalling(room);
+        rooms.delete(room.id);
+        broadcastRooms();
         return;
       }
     }
 
-    if (room.players.size === 0) {
-      stopRoomTimer(room);
-      rooms.delete(roomId);
-      broadcastRoomsList();
+    // if playing and everyone left etc.
+    if (!room.players.length) {
+      stopCalling(room);
+      rooms.delete(room.id);
+      broadcastRooms();
       return;
     }
 
-    io.to(roomId).emit(room.status === "waiting" ? "lobby:update" : "game:update", getRoomPublic(room));
-    broadcastRoomsList();
-  });
-
-  socket.on("card:select", ({ roomId, cardId }) => {
-    try {
-      const room = rooms.get(roomId);
-      if (!room) throw new Error("Không tìm thấy phòng.");
-      if (room.status !== "waiting") throw new Error("Đã vào ván chơi, không thể đổi tờ dò.");
-
-      const card = getCardById(cardId);
-      if (!card) throw new Error("Tờ dò không hợp lệ.");
-
-      const player = room.players.get(socket.id);
-      if (!player) throw new Error("Bạn không ở trong phòng.");
-
-      if (room.usedCardIds.has(cardId) && player.cardId !== cardId) {
-        throw new Error("Tờ dò này đã có người chọn.");
-      }
-
-      if (player.cardId && player.cardId !== cardId) {
-        room.usedCardIds.delete(player.cardId);
-      }
-
-      player.cardId = cardId;
-      room.usedCardIds.add(cardId);
-
-      io.to(roomId).emit("lobby:update", getRoomPublic(room));
-    } catch (e) {
-      socket.emit("toast", { type: "error", message: e.message || "Chọn tờ dò thất bại." });
-    }
-  });
-
-  socket.on("lobby:kick", ({ roomId, targetId }) => {
-    try {
-      const room = rooms.get(roomId);
-      if (!room) throw new Error("Không tìm thấy phòng.");
-      if (!isHost(room, socket.id)) throw new Error("Chỉ chủ phòng được kick.");
-      if (room.status !== "waiting") throw new Error("Chỉ kick được khi đang chờ.");
-      if (!room.players.has(targetId)) throw new Error("Người chơi không tồn tại.");
-
-      const target = room.players.get(targetId);
-      if (target.cardId) throw new Error("Chỉ kick người chưa chọn tờ dò.");
-
-      room.players.delete(targetId);
-
-      io.to(targetId).emit("kicked", { message: "Bạn đã bị chủ phòng kick (chưa chọn tờ dò)." });
-      io.sockets.sockets.get(targetId)?.leave(roomId);
-
-      io.to(roomId).emit("lobby:update", getRoomPublic(room));
-      broadcastRoomsList();
-    } catch (e) {
-      socket.emit("toast", { type: "error", message: e.message || "Kick thất bại." });
-    }
-  });
-
-  socket.on("game:start", ({ roomId }) => {
-    try {
-      const room = rooms.get(roomId);
-      if (!room) throw new Error("Không tìm thấy phòng.");
-      if (!isHost(room, socket.id)) throw new Error("Chỉ chủ phòng được bắt đầu.");
-      if (room.status !== "waiting") throw new Error("Phòng không ở trạng thái chờ.");
-      if (!canStart(room)) throw new Error("Cần tối thiểu 2 người và tất cả đã chọn xong tờ dò.");
-
-      startGame(room);
-    } catch (e) {
-      socket.emit("toast", { type: "error", message: e.message || "Bắt đầu thất bại." });
-    }
-  });
-
-  socket.on("game:claim", ({ roomId }) => {
-    try {
-      const room = rooms.get(roomId);
-      if (!room) throw new Error("Không tìm thấy phòng.");
-      if (room.status !== "playing") throw new Error("Chưa ở trạng thái đang chơi.");
-
-      const player = room.players.get(socket.id);
-      if (!player) throw new Error("Bạn không ở trong phòng.");
-      if (player.eliminated) throw new Error("Bạn đã bị loại.");
-      if (!player.cardId) throw new Error("Bạn chưa chọn tờ dò.");
-
-      const ok = checkWin(player.cardId, room.calledNumbers);
-
-      if (ok) {
-        player.score += 1;
-        endRound(room, { type: "win", winnerId: player.id, winnerName: player.name });
-      } else {
-        player.eliminated = true;
-        io.to(roomId).emit("toast", {
-          type: "warn",
-          message: `❌ ${player.name} báo KINH sai và đã bị loại!`,
-        });
-        io.to(roomId).emit("game:update", getRoomPublic(room));
-      }
-    } catch (e) {
-      socket.emit("toast", { type: "error", message: e.message || "Báo KINH thất bại." });
-    }
-  });
-
-  socket.on("game:reset", ({ roomId }) => {
-    try {
-      const room = rooms.get(roomId);
-      if (!room) throw new Error("Không tìm thấy phòng.");
-      if (!isHost(room, socket.id)) throw new Error("Chỉ chủ phòng được reset.");
-      if (room.status !== "ended") throw new Error("Chỉ reset sau khi ván kết thúc.");
-
-      room.status = "waiting";
-      room.calledNumbers = [];
-      room.currentNumber = null;
-      room.remainingNumbers = makeNumbersSet();
-      stopRoomTimer(room);
-
-      for (const p of room.players.values()) p.eliminated = false;
-
-      io.to(roomId).emit("lobby:update", getRoomPublic(room));
-      broadcastRoomsList();
-    } catch (e) {
-      socket.emit("toast", { type: "error", message: e.message || "Reset thất bại." });
-    }
-  });
-
-  socket.on("chat:send", ({ roomId, text }) => {
-    const room = rooms.get(roomId);
-    if (!room) return;
-    const player = room.players.get(socket.id);
-    if (!player) return;
-
-    const msg = (text || "").trim().slice(0, 300);
-    if (!msg) return;
-
-    io.to(roomId).emit("chat:msg", {
-      from: player.name,
-      text: msg,
-      at: now(),
-    });
+    io.to(room.id).emit(room.status === "playing" ? "game:update" : "lobby:update", publicRoom(room));
+    broadcastRooms();
   });
 
   socket.on("disconnect", () => {
+    // remove from any room
     for (const room of rooms.values()) {
-      if (room.players.has(socket.id)) {
-        const p = room.players.get(socket.id);
-        if (p?.cardId) room.usedCardIds.delete(p.cardId);
+      const idx = room.players.findIndex((p) => p.id === socket.id);
+      if (idx === -1) continue;
 
-        room.players.delete(socket.id);
-
-        if (room.hostId === socket.id) {
-          const next = room.players.values().next().value;
-          if (next) {
-            room.hostId = next.id;
-            io.to(room.id).emit("toast", { type: "info", message: "Chủ phòng mất kết nối. Đã chuyển quyền chủ phòng." });
-          } else {
-            stopRoomTimer(room);
-            rooms.delete(room.id);
-            broadcastRoomsList();
-            return;
-          }
-        }
-
-        io.to(room.id).emit(room.status === "waiting" ? "lobby:update" : "game:update", getRoomPublic(room));
-        broadcastRoomsList();
-        return;
+      const leaving = room.players[idx];
+      if (leaving.cardId) {
+        room.usedCardIds = room.usedCardIds.filter((x) => x !== leaving.cardId);
       }
+      room.players.splice(idx, 1);
+
+      if (room.hostId === socket.id) {
+        if (room.players.length) room.hostId = room.players[0].id;
+        else {
+          stopCalling(room);
+          rooms.delete(room.id);
+          break;
+        }
+      }
+
+      io.to(room.id).emit(room.status === "playing" ? "game:update" : "lobby:update", publicRoom(room));
+      break;
     }
+
+    broadcastRooms();
+  });
+
+  socket.on("card:select", ({ roomId, cardId }) => {
+    const rid = String(roomId || "").trim().toUpperCase();
+    const cid = String(cardId || "").trim();
+    const room = rooms.get(rid);
+    if (!room) return;
+    if (room.status !== "waiting") return;
+
+    const player = room.players.find((p) => p.id === socket.id);
+    if (!player) return;
+    if (player.eliminated) return;
+
+    // if used by others
+    const alreadyUsed = room.usedCardIds.includes(cid);
+    const selectingSame = player.cardId === cid;
+    if (alreadyUsed && !selectingSame) return emitToast(socket, "error", "Tờ dò đã có người chọn.");
+
+    // free old
+    if (player.cardId && player.cardId !== cid) {
+      room.usedCardIds = room.usedCardIds.filter((x) => x !== player.cardId);
+    }
+
+    // set new
+    player.cardId = cid;
+    if (!room.usedCardIds.includes(cid)) room.usedCardIds.push(cid);
+
+    io.to(room.id).emit("lobby:update", publicRoom(room));
+  });
+
+  socket.on("lobby:kick", ({ roomId, targetId }) => {
+    const rid = String(roomId || "").trim().toUpperCase();
+    const tid = String(targetId || "").trim();
+    const room = rooms.get(rid);
+    if (!room) return;
+    if (room.status !== "waiting") return;
+    if (room.hostId !== socket.id) return;
+
+    const idx = room.players.findIndex((p) => p.id === tid);
+    if (idx === -1) return;
+    const target = room.players[idx];
+    if (target.id === room.hostId) return;
+
+    // only kick who hasn't selected (as requirement)
+    if (target.cardId) return;
+
+    room.players.splice(idx, 1);
+
+    io.to(tid).emit("kicked", { message: "Bạn bị chủ phòng kick vì chưa chọn tờ dò." });
+    io.sockets.sockets.get(tid)?.leave(room.id);
+
+    io.to(room.id).emit("lobby:update", publicRoom(room));
+    broadcastRooms();
+  });
+
+  socket.on("game:start", ({ roomId }) => {
+    const rid = String(roomId || "").trim().toUpperCase();
+    const room = rooms.get(rid);
+    if (!room) return;
+    if (room.hostId !== socket.id) return;
+    if (room.status !== "waiting") return;
+    if (!allPlayersSelected(room)) return emitToast(socket, "error", "Tất cả người chơi phải chọn tờ dò trước.");
+
+    // reset eliminated flags (new round)
+    room.players.forEach((p) => (p.eliminated = false));
+    startCalling(room);
+    io.to(room.id).emit("game:update", publicRoom(room));
+    broadcastRooms();
+  });
+
+  socket.on("game:reset", ({ roomId }) => {
+    const rid = String(roomId || "").trim().toUpperCase();
+    const room = rooms.get(rid);
+    if (!room) return;
+    if (room.hostId !== socket.id) return;
+
+    stopCalling(room);
+    room.status = "waiting";
+    room.calledNumbers = [];
+    room.currentNumber = null;
+    room.remainingNumbers = [];
+    room.players.forEach((p) => (p.eliminated = false));
+
+    io.to(room.id).emit("lobby:update", publicRoom(room));
+    broadcastRooms();
+  });
+
+  socket.on("game:claim", ({ roomId }) => {
+    const rid = String(roomId || "").trim().toUpperCase();
+    const room = rooms.get(rid);
+    if (!room) return;
+    if (room.status !== "playing") return;
+
+    const player = room.players.find((p) => p.id === socket.id);
+    if (!player) return;
+    if (player.eliminated) return;
+
+    const ok = validateClaim(room, player);
+
+    if (ok) {
+      player.score = (player.score || 0) + 1;
+      room.status = "ended";
+      stopCalling(room);
+
+      io.to(room.id).emit("game:update", publicRoom(room));
+      io.to(room.id).emit("round:ended", { room: publicRoom(room), reason: { winnerName: player.name } });
+      broadcastRooms();
+      return;
+    }
+
+    // wrong claim -> eliminate
+    player.eliminated = true;
+    emitToast(socket, "error", "Báo KINH sai! Bạn bị loại (chỉ xem + chat).");
+    io.to(room.id).emit("game:update", publicRoom(room));
+  });
+
+  socket.on("chat:send", ({ roomId, text }) => {
+    const rid = String(roomId || "").trim().toUpperCase();
+    const room = rooms.get(rid);
+    if (!room) return;
+    const player = room.players.find((p) => p.id === socket.id);
+    if (!player) return;
+
+    const t = String(text || "").trim();
+    if (!t) return;
+    addChat(room, player.name, t);
   });
 });
 
