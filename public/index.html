@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Lô-tô Miền Tây</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body>
+  <div class="bg-orb orb1"></div>
+  <div class="bg-orb orb2"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">LT</div>
+      <div class="brand-text">
+        <div class="brand-title">Lô-tô Miền Tây</div>
+        <div class="brand-sub">Online • Real-time • Team Play</div>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <button id="btnOpenChat" class="btn btn-ghost hidden">Chat</button>
+      <button id="btnLeaveRoom" class="btn btn-danger hidden">Thoát phòng</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- TOAST -->
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- VIEW 1: First Look -->
+    <section id="viewHome" class="view">
+      <div class="card hero">
+        <h1 class="h1">Lô-tô Miền Tây</h1>
+        <p class="muted">Chọn tờ dò duy nhất • Chủ phòng gọi số mỗi 10 giây • Tự tick • Báo “KINH” để hệ thống quét</p>
+
+        <div class="form-row">
+          <label class="label">Tên của bạn</label>
+          <input id="inputPlayerName" class="input" placeholder="VD: Nam, Linh, Phúc..." maxlength="24"/>
+        </div>
+
+        <div class="grid2">
+          <button id="goCreate" class="btn btn-primary btn-lg">Tạo phòng</button>
+          <button id="goJoin" class="btn btn-secondary btn-lg">Tham gia phòng</button>
+        </div>
+
+        <div class="footer-note">Designed by NDTV</div>
+      </div>
+    </section>
+
+    <!-- VIEW 2A: Create Room -->
+    <section id="viewCreate" class="view hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2 class="h2">Tạo phòng</h2>
+          <button class="btn btn-ghost" data-back="home">← Quay lại</button>
+        </div>
+
+        <div class="form-row">
+          <label class="label">Tên phòng</label>
+          <input id="inputRoomName" class="input" placeholder="VD: Team Marketing, Team Dev..." maxlength="28"/>
+        </div>
+
+        <div class="form-row">
+          <label class="label">Số người chơi (2–10)</label>
+          <input id="inputMaxPlayers" class="input" type="number" min="2" max="10" value="6"/>
+        </div>
+
+        <button id="btnCreateRoom" class="btn btn-primary btn-lg w100">Tạo phòng ngay</button>
+      </div>
+    </section>
+
+    <!-- VIEW 2B: Join Room -->
+    <section id="viewJoin" class="view hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2 class="h2">Danh sách phòng</h2>
+          <button class="btn btn-ghost" data-back="home">← Quay lại</button>
+        </div>
+
+        <div class="muted small">Chỉ có thể vào phòng <b>Đang chờ</b>.</div>
+
+        <div id="roomsList" class="rooms-list"></div>
+      </div>
+    </section>
+
+    <!-- VIEW 3: Lobby -->
+    <section id="viewLobby" class="view hidden">
+      <div class="grid-lobby">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2 class="h2" id="lobbyRoomTitle">Phòng</h2>
+              <div class="muted small" id="lobbyRoomMeta"></div>
+            </div>
+            <div class="stack">
+              <button id="btnStartGame" class="btn btn-primary hidden">Bắt đầu</button>
+              <button id="btnResetGame" class="btn btn-secondary hidden">Chơi ván mới</button>
+            </div>
+          </div>
+
+          <div class="section-title">Người chơi</div>
+          <div id="playersList" class="players-list"></div>
+
+          <div class="divider"></div>
+
+          <div class="section-title">Chọn tờ dò (duy nhất)</div>
+          <div class="muted small">Mỗi tờ chỉ 1 người được chọn. Chủ phòng chỉ bắt đầu khi mọi người đã chọn xong.</div>
+
+          <div id="deckGrid" class="deck-grid"></div>
+        </div>
+
+        <div class="card">
+          <h3 class="h3">Hướng dẫn nhanh</h3>
+          <ol class="list">
+            <li>Chọn 1 tờ dò cho bạn (không trùng).</li>
+            <li>Chờ chủ phòng bấm <b>Bắt đầu</b>.</li>
+            <li>Khi số được call, bạn <b>tự tick</b> trên tờ dò.</li>
+            <li>Khi bạn tin là đã “KINH”, bấm <b>Báo KINH</b>. Hệ thống sẽ quét đúng/sai.</li>
+            <li>Báo sai → bị loại (chỉ xem + chat). Báo đúng → +1 điểm và kết thúc ván.</li>
+          </ol>
+
+          <div class="divider"></div>
+
+          <div class="section-title">Chat</div>
+          <div id="chatBoxLobby" class="chatbox"></div>
+          <div class="chatbar">
+            <input id="chatInputLobby" class="input" placeholder="Nhập tin nhắn..." maxlength="300"/>
+            <button id="chatSendLobby" class="btn btn-secondary">Gửi</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 4: Game -->
+    <section id="viewGame" class="view hidden">
+      <div class="grid-game">
+        <div class="card call-panel">
+          <div class="call-top">
+            <div>
+              <div class="muted small">Số vừa call</div>
+              <div id="currentNumber" class="big-number">--</div>
+            </div>
+            <div class="call-actions">
+              <button id="btnClaim" class="btn btn-primary btn-lg">Báo KINH</button>
+            </div>
+          </div>
+
+          <div class="divider"></div>
+
+          <div class="section-title">Lịch sử số</div>
+          <div id="historyNumbers" class="history"></div>
+
+          <div class="divider"></div>
+
+          <div class="section-title">Bảng điểm</div>
+          <div id="scoreBoard" class="players-list"></div>
+        </div>
+
+        <div class="card card-panel">
+          <div class="card-head">
+            <div>
+              <h2 class="h2">Tờ dò của bạn</h2>
+              <div class="muted small" id="myCardMeta"></div>
+            </div>
+            <div class="badge" id="statusBadge">Đang chơi</div>
+          </div>
+
+          <div id="myCardGrid" class="card-grid"></div>
+
+          <div class="divider"></div>
+
+          <div class="section-title">Chat</div>
+          <div id="chatBoxGame" class="chatbox"></div>
+          <div class="chatbar">
+            <input id="chatInputGame" class="input" placeholder="Nhập tin nhắn..." maxlength="300"/>
+            <button id="chatSendGame" class="btn btn-secondary">Gửi</button>
+          </div>
+
+          <div class="muted tiny note">
+            * Tick chỉ để bạn theo dõi. Hệ thống chỉ quét khi bạn bấm “Báo KINH”.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CHAT MODAL (mobile/optional) -->
+    <div id="chatModal" class="modal hidden">
+      <div class="modal-content card">
+        <div class="card-head">
+          <h2 class="h2">Chat</h2>
+          <button id="btnCloseChat" class="btn btn-ghost">Đóng</button>
+        </div>
+        <div id="chatBoxModal" class="chatbox"></div>
+        <div class="chatbar">
+          <input id="chatInputModal" class="input" placeholder="Nhập tin nhắn..." maxlength="300"/>
+          <button id="chatSendModal" class="btn btn-secondary">Gửi</button>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/client.js"></script>
+</body>
+</html>
