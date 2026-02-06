@@ -15,7 +15,6 @@ const PORT = process.env.PORT || 3000;
 const MIN_NUM = 1;
 const MAX_NUM = 90;
 const CALL_INTERVAL_MS = 10_000; // 10s
-const MAX_CARDS = 10;
 
 // ====== In-memory store ======
 /**
@@ -97,17 +96,52 @@ function pickRandomFromSet(set) {
   return null;
 }
 
-// ====== Card Deck (10 cards, 5 colors, each color has 2 complementary cards) ======
-// Each card is 15 numbers (3x5). Complement mapping: n -> 91 - n
+// ====== Deck: 10 tờ dò (5 màu x A/B)
+// 1 tờ dò hoàn chỉnh = 3 block (mỗi block 3x9, 15 số) => tổng 9x9, 45 số
 function buildDeck() {
-  // Pre-chosen bases (15 unique each). You can edit if you want different layouts.
-  const bases = [
-    [1, 7, 12, 18, 25, 31, 36, 42, 49, 53, 58, 64, 71, 77, 85],
-    [3, 9, 14, 20, 27, 33, 39, 45, 50, 56, 60, 66, 72, 79, 88],
-    [2, 8, 15, 22, 28, 34, 40, 46, 52, 57, 62, 68, 73, 81, 90],
-    [4, 10, 16, 23, 29, 35, 41, 47, 54, 59, 63, 69, 74, 82, 86],
-    [5, 11, 17, 24, 30, 32, 38, 44, 51, 55, 61, 67, 70, 76, 84],
+  const ticketsA = [
+    {
+      title: "TÂN TÂN",
+      blocks: [
+        [7, 16, 32, 66, 73, 18, 29, 46, 55, 88, 2, 23, 34, 50, 75],
+        [4, 30, 40, 61, 78, 10, 27, 41, 56, 86, 20, 39, 59, 60, 83],
+        [9, 24, 51, 64, 81, 3, 28, 48, 53, 80, 17, 37, 45, 63, 77],
+      ],
+    },
+    {
+      title: "MIỀN TÂY",
+      blocks: [
+        [1, 12, 25, 33, 70, 8, 19, 42, 54, 89, 6, 21, 38, 65, 76],
+        [5, 14, 26, 47, 72, 11, 22, 35, 58, 84, 2, 29, 44, 60, 90],
+        [3, 18, 27, 49, 71, 7, 16, 32, 66, 73, 4, 30, 40, 61, 78],
+      ],
+    },
+    {
+      title: "VUI VẺ",
+      blocks: [
+        [6, 15, 24, 52, 81, 9, 14, 28, 48, 80, 1, 17, 37, 45, 63],
+        [2, 13, 29, 50, 75, 5, 10, 27, 41, 56, 20, 39, 59, 60, 83],
+        [7, 16, 32, 66, 73, 8, 19, 42, 54, 89, 4, 30, 40, 61, 78],
+      ],
+    },
+    {
+      title: "HÊN XUI",
+      blocks: [
+        [9, 11, 23, 34, 75, 2, 18, 29, 46, 55, 7, 16, 32, 66, 73],
+        [4, 10, 27, 41, 56, 20, 39, 59, 60, 83, 5, 14, 26, 47, 72],
+        [1, 12, 25, 33, 70, 6, 21, 38, 65, 76, 3, 28, 48, 53, 80],
+      ],
+    },
+    {
+      title: "ĐẮC LỘC",
+      blocks: [
+        [8, 19, 42, 54, 89, 6, 15, 24, 52, 81, 1, 17, 37, 45, 63],
+        [7, 16, 32, 66, 73, 4, 30, 40, 61, 78, 9, 24, 51, 64, 81],
+        [2, 13, 29, 50, 75, 5, 14, 26, 47, 72, 3, 18, 27, 49, 71],
+      ],
+    },
   ];
+
   const colors = [
     { key: "red", label: "Đỏ" },
     { key: "blue", label: "Xanh dương" },
@@ -117,25 +151,30 @@ function buildDeck() {
   ];
 
   const deck = [];
+  const comp = (n) => 91 - n;
+
   for (let i = 0; i < 5; i++) {
-    const base = bases[i].slice().sort((a, b) => a - b);
-    const comp = base.map((n) => 91 - n).sort((a, b) => a - b);
+    const baseTicket = ticketsA[i];
 
     deck.push({
       id: `${colors[i].key}-A`,
       color: colors[i].key,
       colorLabel: colors[i].label,
       variant: "A",
-      numbers: base,
+      title: baseTicket.title,
+      blocks: baseTicket.blocks.map((b) => b.slice()),
     });
+
     deck.push({
       id: `${colors[i].key}-B`,
       color: colors[i].key,
       colorLabel: colors[i].label,
       variant: "B",
-      numbers: comp,
+      title: baseTicket.title,
+      blocks: baseTicket.blocks.map((b) => b.map(comp)),
     });
   }
+
   return deck;
 }
 
@@ -145,12 +184,15 @@ function getCardById(cardId) {
   return DECK.find((c) => c.id === cardId) || null;
 }
 
-// Win condition: all numbers on your card must have been called (system only checks when you claim)
+/**
+ * ✅ Rule KINH hiện tại: Hoàn thành BẤT KỲ 1 BLOCK (15 số).
+ * Nếu bạn muốn "KINH cả tờ" (45 số) => đổi `.some` thành `.every`.
+ */
 function checkWin(cardId, calledNumbers) {
   const card = getCardById(cardId);
   if (!card) return false;
   const called = new Set(calledNumbers);
-  return card.numbers.every((n) => called.has(n));
+  return (card.blocks || []).some((block) => block.every((n) => called.has(n)));
 }
 
 function stopRoomTimer(room) {
@@ -164,22 +206,23 @@ function startGame(room) {
   room.currentNumber = null;
   room.remainingNumbers = makeNumbersSet(MIN_NUM, MAX_NUM);
 
-  // When starting a new round, reset eliminated flags but KEEP scores
+  // Reset eliminated for new round (keep scores)
   for (const p of room.players.values()) {
     p.eliminated = false;
   }
 
   stopRoomTimer(room);
 
+  // Call one number immediately (optional)
+  callOneImmediate(room);
+
   room.timer = setInterval(() => {
-    // If room got deleted or not playing, stop
     if (!rooms.has(room.id) || room.status !== "playing") {
       stopRoomTimer(room);
       return;
     }
 
     if (room.remainingNumbers.size === 0) {
-      // No more numbers -> end
       endRound(room, { type: "no_more_numbers" });
       return;
     }
@@ -191,9 +234,6 @@ function startGame(room) {
 
     io.to(room.id).emit("game:update", getRoomPublic(room));
   }, CALL_INTERVAL_MS);
-
-  // Immediately call 1 number at start (optional). Comment if you want wait 10s.
-  callOneImmediate(room);
 
   io.to(room.id).emit("game:update", getRoomPublic(room));
   broadcastRoomsList();
@@ -230,13 +270,17 @@ function isHost(room, socketId) {
 // ====== Socket.IO ======
 io.on("connection", (socket) => {
   socket.emit("deck:list", DECK);
-  socket.emit("rooms:list", Array.from(rooms.values()).map((r) => ({
-    id: r.id,
-    name: r.name,
-    maxPlayers: r.maxPlayers,
-    playerCount: r.players.size,
-    status: r.status === "waiting" ? "Đang chờ" : r.status === "playing" ? "Đang chơi" : "Kết thúc",
-  })));
+
+  socket.emit(
+    "rooms:list",
+    Array.from(rooms.values()).map((r) => ({
+      id: r.id,
+      name: r.name,
+      maxPlayers: r.maxPlayers,
+      playerCount: r.players.size,
+      status: r.status === "waiting" ? "Đang chờ" : r.status === "playing" ? "Đang chơi" : "Kết thúc",
+    }))
+  );
 
   socket.on("room:create", ({ playerName, roomName, maxPlayers }) => {
     try {
@@ -314,14 +358,12 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomId);
     if (!room) return;
 
-    // Free card if had
     const p = room.players.get(socket.id);
     if (p?.cardId) room.usedCardIds.delete(p.cardId);
 
     room.players.delete(socket.id);
     socket.leave(roomId);
 
-    // If host leaves -> assign new host if possible, else delete room
     if (room.hostId === socket.id) {
       const next = room.players.values().next().value;
       if (next) {
@@ -335,7 +377,6 @@ io.on("connection", (socket) => {
       }
     }
 
-    // If room empty -> delete
     if (room.players.size === 0) {
       stopRoomTimer(room);
       rooms.delete(roomId);
@@ -343,7 +384,6 @@ io.on("connection", (socket) => {
       return;
     }
 
-    // If playing and a player leaves, just update
     io.to(roomId).emit(room.status === "waiting" ? "lobby:update" : "game:update", getRoomPublic(room));
     broadcastRoomsList();
   });
@@ -360,12 +400,10 @@ io.on("connection", (socket) => {
       const player = room.players.get(socket.id);
       if (!player) throw new Error("Bạn không ở trong phòng.");
 
-      // If card already used by someone else
       if (room.usedCardIds.has(cardId) && player.cardId !== cardId) {
         throw new Error("Tờ dò này đã có người chọn.");
       }
 
-      // Free old
       if (player.cardId && player.cardId !== cardId) {
         room.usedCardIds.delete(player.cardId);
       }
@@ -388,12 +426,10 @@ io.on("connection", (socket) => {
       if (!room.players.has(targetId)) throw new Error("Người chơi không tồn tại.");
 
       const target = room.players.get(targetId);
-      // Only kick those who haven't selected card (as per your requirement)
       if (target.cardId) throw new Error("Chỉ kick người chưa chọn tờ dò.");
 
       room.players.delete(targetId);
 
-      // Ensure they leave socket room
       io.to(targetId).emit("kicked", { message: "Bạn đã bị chủ phòng kick (chưa chọn tờ dò)." });
       io.sockets.sockets.get(targetId)?.leave(roomId);
 
@@ -410,7 +446,7 @@ io.on("connection", (socket) => {
       if (!room) throw new Error("Không tìm thấy phòng.");
       if (!isHost(room, socket.id)) throw new Error("Chỉ chủ phòng được bắt đầu.");
       if (room.status !== "waiting") throw new Error("Phòng không ở trạng thái chờ.");
-      if (!canStart(room)) throw new Error("Cần tối thiểu 2 người và tất cả đã chọn tờ dò.");
+      if (!canStart(room)) throw new Error("Cần tối thiểu 2 người và tất cả đã chọn xong tờ dò.");
 
       startGame(room);
     } catch (e) {
@@ -427,7 +463,6 @@ io.on("connection", (socket) => {
       const player = room.players.get(socket.id);
       if (!player) throw new Error("Bạn không ở trong phòng.");
       if (player.eliminated) throw new Error("Bạn đã bị loại.");
-
       if (!player.cardId) throw new Error("Bạn chưa chọn tờ dò.");
 
       const ok = checkWin(player.cardId, room.calledNumbers);
@@ -455,14 +490,12 @@ io.on("connection", (socket) => {
       if (!isHost(room, socket.id)) throw new Error("Chỉ chủ phòng được reset.");
       if (room.status !== "ended") throw new Error("Chỉ reset sau khi ván kết thúc.");
 
-      // Back to waiting lobby; keep chosen cards to start quickly (you can change if want)
       room.status = "waiting";
       room.calledNumbers = [];
       room.currentNumber = null;
       room.remainingNumbers = makeNumbersSet();
       stopRoomTimer(room);
 
-      // Remove eliminated, allow everyone interact again
       for (const p of room.players.values()) p.eliminated = false;
 
       io.to(roomId).emit("lobby:update", getRoomPublic(room));
@@ -489,7 +522,6 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    // Remove player from any room they were in
     for (const room of rooms.values()) {
       if (room.players.has(socket.id)) {
         const p = room.players.get(socket.id);
