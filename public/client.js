@@ -177,6 +177,76 @@ function buildBlockGrid15(numbers15) {
   return grid;
 }
 
+// ===== Ticket Color Themes (5 màu cho 5 cặp) =====
+function getThemeByColor(colorKey) {
+  // Các màu này sẽ làm: viền + ô trống + header tint khác nhau
+  // Bạn có thể đổi cho “đậm” hơn/nhạt hơn tùy ý.
+  const themes = {
+    red: {
+      paperTop: "rgba(255,252,238,0.98)",
+      paperBottom: "rgba(255,232,210,0.97)",
+      border: "rgba(210,70,70,0.55)",
+      dot: "rgba(170,40,40,0.10)",
+      title: "rgba(70,10,10,0.88)",
+      meta: "rgba(70,10,10,0.62)",
+      blankTop: "rgba(255,115,115,0.95)",
+      blankBottom: "rgba(255,75,105,0.90)",
+      blankStroke: "rgba(120,20,30,0.25)",
+      cellStroke: "rgba(120,40,40,0.18)",
+    },
+    blue: {
+      paperTop: "rgba(245,252,255,0.98)",
+      paperBottom: "rgba(210,236,255,0.97)",
+      border: "rgba(70,130,255,0.55)",
+      dot: "rgba(40,90,170,0.10)",
+      title: "rgba(10,35,70,0.88)",
+      meta: "rgba(10,35,70,0.62)",
+      blankTop: "rgba(130,185,255,0.95)",
+      blankBottom: "rgba(70,130,255,0.90)",
+      blankStroke: "rgba(20,60,120,0.25)",
+      cellStroke: "rgba(40,70,120,0.18)",
+    },
+    green: {
+      paperTop: "rgba(246,255,248,0.98)",
+      paperBottom: "rgba(214,245,224,0.97)",
+      border: "rgba(45,180,120,0.55)",
+      dot: "rgba(25,120,80,0.10)",
+      title: "rgba(10,55,35,0.88)",
+      meta: "rgba(10,55,35,0.62)",
+      blankTop: "rgba(120,235,170,0.95)",
+      blankBottom: "rgba(45,227,142,0.90)",
+      blankStroke: "rgba(10,90,55,0.25)",
+      cellStroke: "rgba(20,90,60,0.18)",
+    },
+    purple: {
+      paperTop: "rgba(252,248,255,0.98)",
+      paperBottom: "rgba(230,220,255,0.97)",
+      border: "rgba(124,92,255,0.55)",
+      dot: "rgba(90,60,170,0.10)",
+      title: "rgba(40,20,80,0.88)",
+      meta: "rgba(40,20,80,0.62)",
+      blankTop: "rgba(190,160,255,0.95)",
+      blankBottom: "rgba(124,92,255,0.90)",
+      blankStroke: "rgba(60,35,120,0.25)",
+      cellStroke: "rgba(70,50,120,0.18)",
+    },
+    orange: {
+      paperTop: "rgba(255,252,240,0.98)",
+      paperBottom: "rgba(255,232,180,0.97)",
+      border: "rgba(255,176,32,0.55)",
+      dot: "rgba(150,95,0,0.10)",
+      title: "rgba(50,35,0,0.88)",
+      meta: "rgba(50,35,0,0.62)",
+      blankTop: "rgba(255,201,69,0.95)",
+      blankBottom: "rgba(255,176,32,0.92)",
+      blankStroke: "rgba(120,70,0,0.25)",
+      cellStroke: "rgba(120,70,0,0.18)",
+    },
+  };
+
+  return themes[colorKey] || themes.orange;
+}
+
 // ===== Canvas ticket renderer (tấm hình) =====
 function roundRect(ctx, x, y, w, h, r, fill, stroke) {
   const rr = Math.min(r, w / 2, h / 2);
@@ -194,6 +264,8 @@ function roundRect(ctx, x, y, w, h, r, fill, stroke) {
 function renderTicketImage(card, cellSize = 42) {
   const cacheKey = `${card.id}|${cellSize}`;
   if (ticketImageCache.has(cacheKey)) return ticketImageCache.get(cacheKey);
+
+  const theme = getThemeByColor(card.color);
 
   const pad = 16;
   const gapBlock = 14;
@@ -220,20 +292,20 @@ function renderTicketImage(card, cellSize = 42) {
   const ctx = canvas.getContext("2d");
   ctx.scale(2, 2);
 
-  // Paper-like background
+  // Paper-like background (themed)
   const bg = ctx.createLinearGradient(0, 0, 0, h);
-  bg.addColorStop(0, "rgba(255,252,238,0.98)");
-  bg.addColorStop(1, "rgba(255,236,180,0.96)");
+  bg.addColorStop(0, theme.paperTop);
+  bg.addColorStop(1, theme.paperBottom);
   ctx.fillStyle = bg;
   roundRect(ctx, 0, 0, w, h, 18, true);
 
-  // Border
+  // Border (themed)
   ctx.lineWidth = 2;
-  ctx.strokeStyle = "rgba(160,110,0,0.45)";
+  ctx.strokeStyle = theme.border;
   roundRect(ctx, 1, 1, w - 2, h - 2, 18, false, true);
 
-  // Tiny pattern dots
-  ctx.fillStyle = "rgba(150,95,0,0.10)";
+  // Tiny pattern dots (themed)
+  ctx.fillStyle = theme.dot;
   for (let i = 10; i < w; i += 18) {
     ctx.fillRect(i, 10, 2, 2);
     ctx.fillRect(i, h - 12, 2, 2);
@@ -243,11 +315,11 @@ function renderTicketImage(card, cellSize = 42) {
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
 
-  ctx.fillStyle = "rgba(50,35,0,0.88)";
+  ctx.fillStyle = theme.title;
   ctx.font = "900 22px 'Be Vietnam Pro', system-ui, sans-serif";
   ctx.fillText((card.title || "LÔ TÔ").toUpperCase(), w / 2, pad + 18);
 
-  ctx.fillStyle = "rgba(50,35,0,0.62)";
+  ctx.fillStyle = theme.meta;
   ctx.font = "800 12px 'Be Vietnam Pro', system-ui, sans-serif";
   ctx.fillText(`${card.colorLabel || ""} ${card.variant || ""} • ${card.id || ""}`, w / 2, pad + 38);
 
@@ -269,7 +341,7 @@ function renderTicketImage(card, cellSize = 42) {
       14,
       true
     );
-    ctx.strokeStyle = "rgba(120,70,0,0.18)";
+    ctx.strokeStyle = theme.cellStroke;
     ctx.lineWidth = 1;
     roundRect(
       ctx,
@@ -289,20 +361,20 @@ function renderTicketImage(card, cellSize = 42) {
         const yy = y + r * (cellSize + cellGap);
 
         if (val === null) {
-          // yellow blank
+          // themed blank cell
           const g = ctx.createLinearGradient(x, yy, x, yy + cellSize);
-          g.addColorStop(0, "rgba(255,194,60,0.95)");
-          g.addColorStop(1, "rgba(255,176,32,0.92)");
+          g.addColorStop(0, theme.blankTop);
+          g.addColorStop(1, theme.blankBottom);
           ctx.fillStyle = g;
           roundRect(ctx, x, yy, cellSize, cellSize, 10, true);
-          ctx.strokeStyle = "rgba(120,70,0,0.25)";
+          ctx.strokeStyle = theme.blankStroke;
           ctx.lineWidth = 1;
           roundRect(ctx, x, yy, cellSize, cellSize, 10, false, true);
         } else {
           // number cell
           ctx.fillStyle = "rgba(255,255,255,0.92)";
           roundRect(ctx, x, yy, cellSize, cellSize, 10, true);
-          ctx.strokeStyle = "rgba(120,70,0,0.18)";
+          ctx.strokeStyle = theme.cellStroke;
           ctx.lineWidth = 1;
           roundRect(ctx, x, yy, cellSize, cellSize, 10, false, true);
 
@@ -478,7 +550,7 @@ function renderGame(room) {
     myCardMeta.textContent = "Bạn chưa chọn tờ dò.";
   } else {
     const c = deck.find((x) => x.id === me.cardId);
-    const card = c || { id: me.cardId, title: "LÔ TÔ", colorLabel: "", variant: "", blocks: [[], [], []] };
+    const card = c || { id: me.cardId, title: "LÔ TÔ", color: "orange", colorLabel: "", variant: "", blocks: [[], [], []] };
     myCardMeta.textContent = c ? `${c.colorLabel} ${c.variant} • ID ${c.id}` : `ID ${me.cardId}`;
 
     const imgUrl = renderTicketImage(card, 48);
@@ -498,7 +570,6 @@ function renderGame(room) {
     const grids = blocks.map((b) => buildBlockGrid15(b || []));
 
     // 9 rows total, but we also insert 2 spacer rows => total 11 overlay rows
-    // We build row by row, inserting spacers after rr=2 and rr=5
     for (let rr = 0; rr < 9; rr++) {
       for (let cc = 0; cc < 9; cc++) {
         const b = Math.floor(rr / 3);
@@ -654,7 +725,7 @@ wireChat(chatInputModal, chatSendModal);
 // ===== Socket Events =====
 socket.on("deck:list", (d) => {
   deck = d || [];
-  ticketImageCache.clear();
+  ticketImageCache.clear(); // đổi theme/đổi deck => clear
 });
 
 socket.on("rooms:list", (list) => {
