@@ -14,6 +14,11 @@ let chatMessages = [];
 const ticketImageCache = new Map();
 const ticketLayoutCache = new Map();
 
+// ✅ FIX QUAN TRỌNG: luôn lấy socket.id làm selfId khi connect/reconnect
+socket.on("connect", () => {
+  selfId = socket.id;
+});
+
 // ===== DOM =====
 const el = (id) => document.getElementById(id);
 
@@ -95,14 +100,20 @@ function getSavedName() {
 
 function findMe(room) {
   if (!room) return null;
-  let me = room.players.find((p) => p.id === selfId);
-  if (me) return me;
 
+  // ✅ Ưu tiên theo socket.id (chuẩn nhất)
+  if (selfId) {
+    const meById = room.players.find((p) => p.id === selfId);
+    if (meById) return meById;
+  }
+
+  // Fallback theo tên (khi refresh nhưng vẫn cùng browser)
   const saved = getSavedName();
   if (saved) {
-    me = room.players.find((p) => (p.name || "").trim() === saved);
-    if (me) return me;
+    const meByName = room.players.find((p) => (p.name || "").trim() === saved);
+    if (meByName) return meByName;
   }
+
   return null;
 }
 
@@ -142,7 +153,6 @@ function decadeCol(n) {
   return Math.floor(n / 10);
 }
 
-// ✅ Build grid 9x9 từ rows (chính xác 5 số / hàng)
 function gridFromRows(rows9) {
   const grid = Array.from({ length: 9 }, () => Array(9).fill(null));
   for (let r = 0; r < 9; r++) {
@@ -151,7 +161,6 @@ function gridFromRows(rows9) {
       const c = decadeCol(n);
       if (grid[r][c] === null) grid[r][c] = n;
       else {
-        // fallback: đặt vào ô trống gần nhất
         let placed = false;
         for (let k = 1; k < 9; k++) {
           const left = c - k;
@@ -159,29 +168,23 @@ function gridFromRows(rows9) {
           if (left >= 0 && grid[r][left] === null) { grid[r][left] = n; placed = true; break; }
           if (right < 9 && grid[r][right] === null) { grid[r][right] = n; placed = true; break; }
         }
-        if (!placed) { /* ignore */ }
+        if (!placed) {}
       }
     }
   }
   return grid;
 }
 
-// Lấy grid 3x9 cho block b (0..2)
 function getBlockGrid(card, b) {
-  // ưu tiên card.rows -> đúng layout mẫu
   if (card.rows && card.rows.length === 9) {
     const full = gridFromRows(card.rows);
     const start = b * 3;
     return [full[start], full[start + 1], full[start + 2]];
   }
-
-  // fallback: nếu server gửi sẵn grid
   if (card.grid && card.grid.length === 9) {
     const start = b * 3;
     return [card.grid[start], card.grid[start + 1], card.grid[start + 2]];
   }
-
-  // fallback cũ nếu vẫn dùng blocks
   return Array.from({ length: 3 }, () => Array(9).fill(null));
 }
 
@@ -398,11 +401,9 @@ function renderTicketImage(card, cellSize = 42) {
   return url;
 }
 
-// ===== Overlay percent positioning =====
 function buildOverlayRects(card, cellSize) {
   const L = getTicketLayout(cellSize);
 
-  // full grid 9x9 theo rows
   let fullGrid;
   if (card.rows && card.rows.length === 9) fullGrid = gridFromRows(card.rows);
   else if (card.grid && card.grid.length === 9) fullGrid = card.grid;
@@ -510,7 +511,6 @@ function renderLobby(room) {
 
   btnResetGame.classList.toggle("hidden", !iAmHost || room.status !== "ended");
 
-  // Players
   playersList.innerHTML = "";
   room.players.forEach((p) => {
     const row = document.createElement("div");
@@ -539,7 +539,6 @@ function renderLobby(room) {
     playersList.appendChild(row);
   });
 
-  // Deck
   deckGrid.innerHTML = "";
   deck.forEach((card) => {
     const used = room.usedCardIds.includes(card.id);
@@ -575,7 +574,6 @@ function renderGame(room) {
 
   currentNumber.textContent = room.currentNumber ?? "--";
 
-  // history
   historyNumbers.innerHTML = "";
   const hist = room.calledNumbers.slice().reverse();
   hist.forEach((n, idx) => {
@@ -585,7 +583,6 @@ function renderGame(room) {
     historyNumbers.appendChild(d);
   });
 
-  // scoreboard
   scoreBoard.innerHTML = "";
   room.players
     .slice()
@@ -606,7 +603,6 @@ function renderGame(room) {
       scoreBoard.appendChild(row);
     });
 
-  // my ticket
   myCardGrid.innerHTML = "";
   if (!me?.cardId) {
     myCardMeta.textContent = "Bạn chưa chọn tờ dò.";
@@ -617,6 +613,8 @@ function renderGame(room) {
 
     const renderCellSize = 48;
     const imgUrl = renderTicketImage(card, renderCellSize);
+
+    // ✅ chỉ cần bạn là player + chưa bị loại + đang chơi => cho tick
     const canInteract = !!me && !me.eliminated && room.status === "playing";
 
     const wrap = document.createElement("div");
@@ -641,7 +639,7 @@ function renderGame(room) {
       cell.title = String(val);
 
       if (canInteract) {
-        cell.addEventListener("click", (e) => {
+        cell.addEventListener("pointerdown", (e) => {
           e.preventDefault();
           e.stopPropagation();
           if (myMarked.has(val)) myMarked.delete(val);
@@ -715,7 +713,6 @@ btnLeaveRoom.addEventListener("click", () => {
   if (!currentRoom) return;
   socket.emit("room:leave", { roomId: currentRoom.id });
   currentRoom = null;
-  selfId = null;
   chatMessages = [];
   myMarked = new Set();
   setView("home");
@@ -759,8 +756,7 @@ socket.on("rooms:list", (list) => {
 
 socket.on("toast", ({ type, message }) => showToast(type, message));
 
-socket.on("room:joined", ({ room, selfId: sid }) => {
-  selfId = sid;
+socket.on("room:joined", ({ room }) => {
   currentRoom = room;
   myMarked = new Set();
   chatMessages = [];
@@ -796,7 +792,6 @@ socket.on("round:ended", ({ room, reason }) => {
 socket.on("kicked", ({ message }) => {
   showToast("error", message || "Bạn đã bị kick.");
   currentRoom = null;
-  selfId = null;
   chatMessages = [];
   myMarked = new Set();
   setView("home");
@@ -809,4 +804,5 @@ socket.on("chat:msg", (msg) => {
 });
 
 // ===== Init =====
+inputPlayerName.value = getSavedName();
 setView("home");
