@@ -1,6 +1,5 @@
 /* global io */
 const socket = io();
-
 const $ = (sel) => document.querySelector(sel);
 
 let deck = [];
@@ -8,8 +7,8 @@ let rooms = [];
 let room = null;
 let selfId = null;
 
-// tick local (mỗi người tự tick, không sync)
-let marked = new Set(); // Set<number>
+// tick local (mỗi người tự tick)
+let marked = new Set();
 let lastToastTimer = null;
 
 function toast(type, message) {
@@ -40,34 +39,35 @@ function topbar() {
         </div>
       </div>
       <div class="actions">
-        ${room ? `<button class="btn small" id="btnChatToggle">Chat</button>` : ``}
-        ${room ? `<button class="btn danger small" id="btnLeave">Thoát phòng</button>` : ``}
+        ${room ? `<button class="btn small danger" id="btnLeave">Thoát phòng</button>` : ``}
       </div>
     </div>
   `;
 }
 
+function getSavedName() {
+  return localStorage.getItem("loto_player_name") || "";
+}
+function saveName(name) {
+  localStorage.setItem("loto_player_name", String(name || "").trim());
+}
+
 /* ========= Views ========= */
 
 function viewHome() {
+  // ✅ BỎ nhập tên ở firstlook
   setView(`
     <div class="container">
       ${topbar()}
       <div class="card pad">
-        <div class="row">
-          <div class="field" style="min-width:260px; flex:1;">
-            <label>Tên của bạn</label>
-            <input class="input" id="playerName" placeholder="Nhập tên..." />
-          </div>
-        </div>
+        <h3 style="margin:0 0 8px;">Chọn hành động</h3>
+        <div class="muted" style="font-size:13px;">Bạn sẽ nhập tên ở bước Tạo phòng / Tham gia phòng.</div>
         <div class="hr"></div>
         <div class="row">
           <button class="btn primary" id="btnGoCreate">Tạo phòng</button>
           <button class="btn" id="btnGoJoin">Tham gia phòng</button>
         </div>
       </div>
-
-      <div class="footer">Designed by NDTV</div>
     </div>
   `);
 
@@ -76,6 +76,8 @@ function viewHome() {
 }
 
 function viewCreate() {
+  const saved = getSavedName();
+
   setView(`
     <div class="container">
       ${topbar()}
@@ -84,7 +86,7 @@ function viewCreate() {
         <div class="row">
           <div class="field" style="min-width:240px; flex:1;">
             <label>Tên của bạn</label>
-            <input class="input" id="playerName" placeholder="Nhập tên..." />
+            <input class="input" id="playerName" placeholder="Nhập tên..." value="${escapeHtml(saved)}"/>
           </div>
           <div class="field" style="min-width:240px; flex:1;">
             <label>Tên phòng</label>
@@ -111,6 +113,9 @@ function viewCreate() {
   $("#btnBack").onclick = () => viewHome();
   $("#btnCreate").onclick = () => {
     const playerName = $("#playerName").value.trim();
+    if (!playerName) return toast("error", "Bạn cần nhập tên.");
+    saveName(playerName);
+
     const roomName = $("#roomName").value.trim();
     const maxPlayers = Number($("#maxPlayers").value);
     socket.emit("room:create", { playerName, roomName, maxPlayers });
@@ -118,6 +123,8 @@ function viewCreate() {
 }
 
 function viewJoin() {
+  const saved = getSavedName();
+
   setView(`
     <div class="container">
       ${topbar()}
@@ -126,7 +133,7 @@ function viewJoin() {
         <div class="row">
           <div class="field" style="min-width:240px; flex:1;">
             <label>Tên của bạn</label>
-            <input class="input" id="playerName" placeholder="Nhập tên..." />
+            <input class="input" id="playerName" placeholder="Nhập tên..." value="${escapeHtml(saved)}"/>
           </div>
           <div class="field" style="min-width:240px; flex:1;">
             <label>Mã phòng</label>
@@ -146,6 +153,9 @@ function viewJoin() {
   $("#btnBack").onclick = () => viewHome();
   $("#btnJoin").onclick = () => {
     const playerName = $("#playerName").value.trim();
+    if (!playerName) return toast("error", "Bạn cần nhập tên.");
+    saveName(playerName);
+
     const roomId = $("#roomId").value.trim().toUpperCase();
     socket.emit("room:join", { playerName, roomId });
   };
@@ -174,7 +184,7 @@ function renderRoomsList() {
           <b>${escapeHtml(r.name)}</b>
           <div class="muted" style="font-size:12px;">Mã: <b>${r.id}</b> • ${r.playerCount}/${r.maxPlayers} • ${r.status}</div>
         </div>
-        <button class="btn small primary">Vào</button>
+        <button class="btn small">Chọn</button>
       </div>
     `;
     box.querySelector("button").onclick = () => {
@@ -186,65 +196,47 @@ function renderRoomsList() {
 
 function viewLobby() {
   if (!room) return viewHome();
-
   const isHost = room.hostId === selfId;
 
   setView(`
     <div class="container">
       ${topbar()}
-      <div class="game-layout">
-        <div class="left-stack">
-          <div class="card pad">
-            <div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start;">
-              <div style="display:grid; gap:4px;">
-                <b style="font-size:18px;">Phòng: ${escapeHtml(room.name)}</b>
-                <div class="muted" style="font-size:12px;">
-                  Mã: <b>${room.id}</b> • ${room.players.length}/${room.maxPlayers} •
-                  <span class="badge ${room.status === "waiting" ? "good" : "warn"}">${room.status === "waiting" ? "Đang chờ" : "Đang chơi"}</span>
-                </div>
-              </div>
-              ${
-                isHost
-                  ? `<button class="btn primary" id="btnStart" ${allSelected(room) ? "" : "disabled"}>Bắt đầu</button>`
-                  : `<span class="badge">Chờ chủ phòng</span>`
-              }
+      <div class="card pad">
+        <div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start;">
+          <div style="display:grid; gap:4px;">
+            <b style="font-size:18px;">Phòng: ${escapeHtml(room.name)}</b>
+            <div class="muted" style="font-size:12px;">
+              Mã: <b>${room.id}</b> • ${room.players.length}/${room.maxPlayers} •
+              <span class="badge">${room.status === "waiting" ? "Đang chờ" : "Đang chơi"}</span>
             </div>
-
-            <div class="hr"></div>
-
-            <div style="font-weight:700; margin-bottom:8px;">Người chơi</div>
-            <div class="scoreList" id="playersList"></div>
           </div>
+          ${
+            isHost
+              ? `<button class="btn primary" id="btnStart" ${allSelected(room) ? "" : "disabled"}>Bắt đầu</button>`
+              : `<span class="badge">Chờ chủ phòng</span>`
+          }
         </div>
 
-        <div class="right-stack">
-          <div class="card pad">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
-              <div>
-                <b>Chọn tờ dò (duy nhất)</b>
-                <div class="muted" style="font-size:12px; margin-top:4px;">
-                  Mỗi tờ chỉ 1 người được chọn. Chủ phòng chỉ bắt đầu khi mọi người đã chọn xong.
-                </div>
-              </div>
-              <span class="badge">10 tờ • 5 cặp màu</span>
-            </div>
+        <div class="hr"></div>
 
-            <div class="hr"></div>
+        <div style="font-weight:700; margin-bottom:8px;">Người chơi</div>
+        <div class="scoreList" id="playersList"></div>
 
-            <div class="row" id="cardsList" style="align-items:stretch;"></div>
-          </div>
+        <div class="hr"></div>
 
-          <div class="card pad">
-            <b>Hướng dẫn nhanh</b>
-            <div class="muted" style="font-size:13px; margin-top:8px; line-height:1.55;">
-              1. Chọn 1 tờ dò (không trùng).<br/>
-              2. Chờ chủ phòng bấm <b>Bắt đầu</b>.<br/>
-              3. Khi số được call, bạn tự tick trên tờ dò.<br/>
-              4. Khi tin là đã “KINH”, bấm <b>Báo KINH</b> (hệ thống sẽ quét đúng/sai).<br/>
-              5. Báo sai → bị loại (chỉ xem + chat). Báo đúng → +1 điểm và kết thúc ván.
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
+          <div>
+            <b>Chọn tờ dò (duy nhất)</b>
+            <div class="muted" style="font-size:12px; margin-top:4px;">
+              Mỗi tờ chỉ 1 người được chọn. Chủ phòng chỉ bắt đầu khi mọi người đã chọn xong.
             </div>
           </div>
+          <span class="badge">10 tờ • 5 cặp màu</span>
         </div>
+
+        <div class="hr"></div>
+
+        <div class="row" id="cardsList" style="align-items:stretch;"></div>
       </div>
     </div>
   `);
@@ -253,9 +245,7 @@ function viewLobby() {
 
   if (isHost) {
     const btnStart = $("#btnStart");
-    if (btnStart) {
-      btnStart.onclick = () => socket.emit("game:start", { roomId: room.id });
-    }
+    if (btnStart) btnStart.onclick = () => socket.emit("game:start", { roomId: room.id });
   }
 
   renderLobbyPlayers();
@@ -267,8 +257,8 @@ function renderLobbyPlayers() {
   if (!list) return;
 
   const isHost = room.hostId === selfId;
-
   list.innerHTML = "";
+
   room.players.forEach((p) => {
     const row = document.createElement("div");
     row.className = "scoreItem";
@@ -299,7 +289,6 @@ function renderLobbyPlayers() {
 function renderCardsForLobby() {
   const el = $("#cardsList");
   if (!el) return;
-
   el.innerHTML = "";
 
   deck.forEach((c) => {
@@ -311,8 +300,6 @@ function renderCardsForLobby() {
     box.style.opacity = used ? "0.55" : "1";
     box.style.cursor = used ? "not-allowed" : "pointer";
 
-    const preview = renderTicketMini(c);
-
     box.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
         <div>
@@ -321,16 +308,16 @@ function renderCardsForLobby() {
         </div>
         <span class="badge">${used ? "Đã có người chọn" : "Còn trống"}</span>
       </div>
-      <div style="margin-top:10px;">${preview}</div>
+
+      <div style="margin-top:10px;">${renderTicketMini(c)}</div>
+
       <div class="muted" style="margin-top:10px; font-size:12px; text-align:center;">
         ${used ? "Tờ này đã bị chọn" : "Click để chọn tờ này"}
       </div>
     `;
 
     if (!used) {
-      box.onclick = () => {
-        socket.emit("card:select", { roomId: room.id, cardId: c.id });
-      };
+      box.onclick = () => socket.emit("card:select", { roomId: room.id, cardId: c.id });
     }
 
     el.appendChild(box);
@@ -338,14 +325,10 @@ function renderCardsForLobby() {
 }
 
 function renderTicketMini(card) {
-  // mini 3 hàng đầu để preview nhanh
   const nums = [];
-  for (let r = 0; r < 3; r++) {
-    for (let c = 0; c < 9; c++) {
-      nums.push(card.grid[r][c]);
-    }
-  }
-  const html = `
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 9; c++) nums.push(card.grid[r][c]);
+
+  return `
     <div style="border-radius:14px; overflow:hidden; border:1px solid rgba(255,255,255,.14); background:rgba(0,0,0,.18); padding:10px;">
       <div style="display:grid; grid-template-columns:repeat(9, 1fr); gap:6px;">
         ${nums
@@ -357,29 +340,38 @@ function renderTicketMini(card) {
       </div>
     </div>
   `;
-  return html;
 }
 
+/* ========= GAME VIEW: 3 cột ngang ========= */
 function viewGame() {
   if (!room) return viewHome();
 
   const me = room.players.find((p) => p.id === selfId);
   const myCard = deck.find((d) => d.id === me?.cardId);
   const eliminated = !!me?.eliminated;
+  const isHost = room.hostId === selfId;
 
   setView(`
     <div class="container">
       ${topbar()}
-      <div class="game-layout">
-        <!-- LEFT -->
-        <div class="left-stack">
-          <div class="card pad callCard">
+
+      <div class="game-layout-3col">
+        <!-- CALL -->
+        <div class="col-call">
+          <div class="card pad">
             <div class="callHeader">
               <div>
                 <div class="label">Số vừa call</div>
                 <div class="callBig" id="currentNumber">${room.currentNumber ?? "—"}</div>
               </div>
-              <button class="btn primary" id="btnClaim" ${eliminated ? "disabled" : ""}>Báo KINH</button>
+              <div style="display:grid; gap:8px; justify-items:end;">
+                <button class="btn primary" id="btnClaim" ${eliminated ? "disabled" : ""}>Báo KINH</button>
+                ${
+                  isHost
+                    ? `<button class="btn" id="btnNewRound">Bắt đầu ván mới</button>`
+                    : ``
+                }
+              </div>
             </div>
 
             <div class="hr"></div>
@@ -394,8 +386,8 @@ function viewGame() {
           </div>
         </div>
 
-        <!-- RIGHT -->
-        <div class="right-stack">
+        <!-- TICKET -->
+        <div class="col-ticket">
           <div class="ticketWrap">
             ${
               myCard
@@ -405,29 +397,30 @@ function viewGame() {
                   <h2>${escapeHtml(myCard.title)}</h2>
                   <div class="sub">${escapeHtml(myCard.colorLabel)} ${myCard.variant} • ID: ${myCard.id}</div>
                 </div>
-
                 <div class="ticketGrid" id="ticketGrid"></div>
-                <div class="ticketSplit"></div>
               </div>
               `
                 : `<div class="card pad">Bạn chưa chọn tờ dò.</div>`
             }
           </div>
+        </div>
 
-          <div class="card pad">
+        <!-- CHAT -->
+        <div class="col-chat">
+          <div class="card pad chatCard">
             <div style="display:flex; justify-content:space-between; align-items:center; gap:10px;">
               <b>Chat</b>
-              <span class="badge ${eliminated ? "bad" : "good"}">${eliminated ? "Đã bị loại (chỉ chat)" : "Đang chơi"}</span>
+              <span class="badge">${eliminated ? "Đã bị loại" : "Đang chơi"}</span>
             </div>
 
-            <div class="hr"></div>
-
             <div class="chatBox" id="chatBox"></div>
+
             <div class="chatInputRow">
               <input class="input" id="chatInput" placeholder="Nhập tin nhắn..." />
               <button class="btn" id="chatSend">Gửi</button>
             </div>
-            <div class="muted" style="font-size:12px; margin-top:8px;">
+
+            <div class="muted" style="font-size:12px;">
               * Tick chỉ để bạn theo dõi. Hệ thống chỉ quét khi bạn bấm “Báo KINH”.
             </div>
           </div>
@@ -440,6 +433,11 @@ function viewGame() {
 
   $("#btnClaim")?.addEventListener("click", () => {
     socket.emit("game:claim", { roomId: room.id });
+  });
+
+  // ✅ Host: reset -> quay về lobby để chọn lại tờ dò
+  $("#btnNewRound")?.addEventListener("click", () => {
+    socket.emit("game:reset", { roomId: room.id });
   });
 
   $("#chatSend")?.addEventListener("click", sendChat);
@@ -456,7 +454,6 @@ function renderHistory() {
   const el = $("#history");
   if (!el) return;
   el.innerHTML = "";
-
   const arr = (room.calledNumbers || []).slice(-20).reverse();
   arr.forEach((n) => {
     const pill = document.createElement("div");
@@ -490,12 +487,6 @@ function renderTicket(myCard, eliminated) {
   if (!gridEl || !myCard) return;
 
   gridEl.innerHTML = "";
-
-  // mỗi user tự tick => giữ marked theo số
-  // nếu đổi tờ dò => reset marked
-  // (đơn giản: reset khi vào game: marked = new Set())
-  // => nếu bạn muốn giữ qua refresh thì có thể dùng localStorage sau.
-
   for (let r = 0; r < 9; r++) {
     for (let c = 0; c < 9; c++) {
       const n = myCard.grid[r][c];
@@ -545,16 +536,13 @@ function appendChat(from, text) {
 }
 
 /* ========= Helpers ========= */
-
 function allSelected(roomObj) {
   return roomObj.players.length >= 2 && roomObj.players.every((p) => !!p.cardId);
 }
-
 function getMyCardId() {
   const me = room?.players?.find((p) => p.id === selfId);
   return me?.cardId || null;
 }
-
 function leaveRoom() {
   if (!room) return;
   socket.emit("room:leave", { roomId: room.id });
@@ -563,7 +551,6 @@ function leaveRoom() {
   marked = new Set();
   viewHome();
 }
-
 function escapeHtml(s) {
   return String(s ?? "")
     .replaceAll("&", "&amp;")
@@ -574,7 +561,6 @@ function escapeHtml(s) {
 }
 
 /* ========= Socket Events ========= */
-
 socket.on("deck:list", (d) => {
   deck = d || [];
 });
@@ -589,24 +575,26 @@ socket.on("toast", ({ type, message }) => toast(type, message));
 socket.on("room:joined", ({ room: r, selfId: sid }) => {
   room = r;
   selfId = sid;
-  marked = new Set(); // reset tick mỗi ván
+  marked = new Set();
   if (room.status === "waiting") viewLobby();
   else viewGame();
 });
 
 socket.on("lobby:update", (r) => {
   room = r;
-  if (room.status === "waiting") viewLobby();
-  else viewGame();
+  // ✅ về lobby thì reset tick để tránh dính ván trước
+  marked = new Set();
+  viewLobby();
 });
 
 socket.on("game:update", (r) => {
   room = r;
-  // update nhẹ UI nếu đang ở game
+
   if (!$("#ticketGrid")) {
     viewGame();
     return;
   }
+
   $("#currentNumber").textContent = room.currentNumber ?? "—";
   renderHistory();
   renderScoreboard();
